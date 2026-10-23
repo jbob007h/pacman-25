@@ -54,7 +54,7 @@ export const SECTOR_PASSAGES = 1;
 /**
  * Longest allowed escape loop, in tiles: for every corridor, the corridor plus the
  * shortest other way between its two ends. If a ghost shows up at one end, this is how
- * far you'd have to run to get around it. Doors count as escape hatches.
+ * far you'd have to run to get around it, using only routes inside the maze.
  */
 export const MAX_ESCAPE_LOOP = 30;
 
@@ -79,7 +79,6 @@ function makeLoopChecker(edges: Edge[]): (maxLoop: number) => boolean {
     if (v === undefined) { v = id.size; id.set(k, v); }
     return v;
   };
-  const OUT = nodeId(-1, -1);
   // Graph edges: [a, b, length, owning lattice edge index or -1 if always present]
   const list: [number, number, number, number][] = [];
   const checkList: number[] = []; // graph edges whose loops we test (one copy of each mirrored pair)
@@ -96,10 +95,8 @@ function makeLoopChecker(edges: Edge[]): (maxLoop: number) => boolean {
     list.push([nodeId(r1, c1), nodeId(r2, c2), len, ei]);
     list.push([nodeId(r1, MW - 1 - c1), nodeId(r2, MW - 1 - c2), len, ei]);
   });
-  // Doors (top/bottom on both sides, and the side doors) lead out; the tunnel joins its two ends.
-  for (const [r, c] of [[1, DOOR_COLS[0]], [20, DOOR_COLS[0]], [1, MW - 1 - DOOR_COLS[0]], [20, MW - 1 - DOOR_COLS[0]], [SIDE_DOOR_ROW, 1], [SIDE_DOOR_ROW, MW - 2]]) {
-    list.push([nodeId(r, c), OUT, 1, -1]);
-  }
+  // Doors don't count as a way around: they leave the maze (and get sealed when a
+  // neighbor collapses). The side tunnel does: it joins the maze's own two edges.
   list.push([nodeId(TUNNEL_ROW, 1), nodeId(TUNNEL_ROW, MW - 2), 3, -1]);
   const n = id.size;
   const adj: [number, number, number][][] = Array.from({ length: n }, () => []);
