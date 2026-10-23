@@ -1,4 +1,5 @@
-// Bundles src/main.ts and inlines it into a single self-contained dist/index.html.
+// Bundles src/main.ts and inlines it into a single self-contained dist/index.html, and
+// bundles the game server (server/main.ts) into dist/server.mjs.
 // Usage: node scripts/build.mjs [--watch]
 import * as esbuild from 'esbuild';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
@@ -55,3 +56,16 @@ if (watch) {
   const result = await esbuild.build(options);
   await inline(result.outputFiles[0].text);
 }
+
+// The game server: one ES module for Node, with `ws` left as a runtime dependency.
+await esbuild.build({
+  entryPoints: [path.join(root, 'server/main.ts')],
+  bundle: true,
+  platform: 'node',
+  format: 'esm',
+  target: 'node20',
+  external: ['ws'],
+  outfile: path.join(root, 'dist/server.mjs'),
+  logLevel: 'warning',
+});
+console.log('dist/server.mjs written');

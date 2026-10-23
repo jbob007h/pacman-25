@@ -2,8 +2,8 @@
 
 A 25-player, last-one-standing maze chase. Every player starts in their own maze on a
 5×5 grid of mazes that wraps in both directions, and anyone can walk through the doors
-into any neighboring maze. This prototype is single-player in the browser: you against
-24 CPU players running the same rules the multiplayer version will use.
+into any neighboring maze. Play solo in the browser against 24 CPU players, or online:
+quick play or a private room with friends, with CPU players filling the empty mazes.
 
 The in-game title is the placeholder **Maze Royale**, and the characters are original
 stand-ins (diamond runners, shield-shaped ghosts, spiky raiders). Pac-Man and its ghosts
@@ -11,17 +11,28 @@ belong to Bandai Namco, so a public release needs its own name and art.
 
 ## Play
 
-Open `dist/index.html` in a browser. No server or install needed.
+**Solo:** open `dist/index.html` in a browser. No server or install needed.
 
-| Key | Action |
-| --- | --- |
-| Arrow keys / WASD | Move (turns are buffered, so press a little early) |
-| Space | Use your held power-up |
-| P or Esc | Pause |
-| M | Mute |
-| Tab | Switch player while spectating |
+**Online:** run the game server (below) and open its address. The start screen then
+offers **Quick Play** (joins the next public match; it starts 20 seconds after the first
+player arrives, or as soon as 25 are in) and **Create Room** / **Join** (a private room
+with a 4-letter code that the host starts). Up to 25 people per match; CPU players take
+the rest of the mazes, and take over for anyone who disconnects until they come back
+(within 60 seconds, by reloading the page).
 
-On touch screens, swipe to move and tap the power-up slot.
+| Keyboard | Controller | Action |
+| --- | --- | --- |
+| Arrow keys / WASD | D-pad or left stick | Move (turns are buffered, so press a little early) |
+| Space | A, X, RB or RT | Use your held power-up |
+| P or Esc | Start | Pause (online: open the menu; the match keeps running) |
+| M | Back / Select | Mute |
+| Tab | LB / RB | Switch player while spectating |
+
+Controllers also drive the menus (d-pad to move, A to press, B to go back) and rumble
+when you lose a life, phase through an enemy, eat a ghost, get dazed, or your maze is
+about to collapse. Any controller the browser recognizes with the standard layout works
+(Xbox, PlayStation, Switch Pro and most others). On touch screens, swipe to move and tap
+the power-up slot.
 
 ## Rules
 
@@ -72,11 +83,16 @@ On touch screens, swipe to move and tap the power-up slot.
 
 ```sh
 npm install
-npm run build      # bundles src/ into dist/index.html (and dist/embed.html)
+npm run build      # bundles src/ into dist/index.html (and dist/embed.html), and the server into dist/server.mjs
 npm run dev        # rebuilds on change; reload dist/index.html
+npm start          # runs the game server on http://localhost:8080 (serves the game too)
 npm run typecheck
 npm run sim        # plays bot-only matches headlessly: node scripts/sim.mjs [matches] [seed] [--verbose]
 ```
+
+Server settings (environment variables): `PORT` (8080), `MAX_ROOMS` (16 matches at
+once; each uses about 5% of a CPU core), `CLIENT_FILE` (the page to serve,
+`dist/index.html`). For testing, `SPEED=10` runs matches ten times faster.
 
 `dist/` is committed so the game can be played without building. Rebuild before
 committing changes to `src/`.
@@ -92,11 +108,49 @@ committing changes to `src/`.
 | `src/ghosts.ts` | Classic ghost targeting and raider steering |
 | `src/bots.ts` | CPU players: a search over tiles they can reach before any threat, scored by nearby value |
 | `src/render.ts`, `src/walls.ts` | Canvas renderer: neon gradient walls drawn through the middle of wall tiles, snapped camera with neighbor strips |
-| `src/hud.ts`, `src/audio.ts`, `src/main.ts` | HUD and minimap, synthesized sound and music, input and the main loop |
+| `src/hud.ts`, `src/audio.ts`, `src/main.ts` | HUD and minimap, synthesized sound and music, input, menus and the main loop |
+| `src/gamepad.ts` | Controller input (Gamepad API), menu focus navigation, rumble |
+| `src/net/` | Online client and the wire protocol |
+| `server/` | The game server: rooms, matchmaking, the authoritative match loop |
 
-## Toward multiplayer
+## Online play: how it works
 
-`game.ts` is deterministic given its seed and inputs, which is what the planned
-multiplayer build needs: move the simulation to an authoritative server (Rust, compiled
-to WebAssembly for client prediction), send only inputs from clients, and stream state
-over WebTransport with a WebSocket fallback.
+The server (`server/main.ts`, Node + [`ws`](https://github.com/websockets/ws)) runs the
+real match with the same `src/game.ts` at 60 Hz and is the only authority.
+
+- **Same world everywhere.** A match starts by sending every client the seed and the list
+  of human players. Each client builds an identical "mirror" game from that, so the mazes
+  never need to be sent.
+- **Snapshots.** 30 times a second each client gets a compact snapshot of what it can see
+  (its maze and the eight around it in full, a position for everyone else for the
+  minimap), maze state that changed, full pellet layouts for mazes coming into view, and
+  the events that drive effects and sounds.
+- **Your Pac-Man is predicted.** The client moves you immediately and sends one steering
+  frame per tick. The server moves you by exactly those frames, so when a snapshot
+  confirms a frame, the client replays the frames still in flight on top of it and
+  usually lands on the same spot. Small differences are eased out; big ones (you got hit)
+  snap.
+- **Everyone else is drawn 100 ms in the past,** interpolated between snapshots, and
+  events are released on that same clock so effects line up with what you see.
+- **Disconnects.** A dropped player's Pac-Man is handed to a CPU, and the seat is held
+  for 60 seconds for them to reconnect.
+
+Files: `src/net/protocol.ts` (messages and snapshot format), `src/net/client.ts`
+(connection, prediction, interpolation), `server/main.ts` (rooms, matchmaking, the match
+loop), `src/gamepad.ts` (controller input and menu navigation).
+
+## Deploy to Fly.io
+
+The repo includes a `Dockerfile` and `fly.toml`. Matches live in the server's memory, so
+run a single machine.
+
+```sh
+fly auth login
+fly launch --no-deploy --copy-config   # pick an app name; keep the existing fly.toml
+fly deploy --ha=false                  # one machine, never auto-stopped
+fly open                               # the game, with online play enabled
+```
+
+Choose `primary_region` in `fly.toml` near your players: the game feels best under
+about 120 ms round trip. The page served by the server enables the online buttons; a
+copy of `dist/index.html` opened from disk (or anywhere else) is solo only.

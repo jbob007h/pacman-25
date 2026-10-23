@@ -1,0 +1,32 @@
+# Fly.io config for the Maze Royale game server.
+# Rooms live in memory, so run exactly ONE machine: deploy with `fly deploy --ha=false`.
+app = "maze-royale"          # must be unique on Fly: change it, or let `fly launch` pick one
+primary_region = "iad"       # pick the region closest to your players (`fly platform regions`)
+
+[build]
+
+[env]
+  PORT = "8080"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"  # a stopped machine would drop every match in progress
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type = "connections"
+    soft_limit = 400
+    hard_limit = 500
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "15s"
+    method = "GET"
+    path = "/healthz"
+    timeout = "2s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Maze Royale</title>
+<meta name="maze-online" content="0">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;600;700&amp;family=Orbitron:wght@600;800&amp;display=swap" rel="stylesheet">
 <style>
@@ -74,7 +75,24 @@ input[type=text] { font: inherit; font-size: 16px; color: var(--text); backgroun
 input[type=text]:focus { outline: 2px solid var(--cyan); outline-offset: 1px; }
 button { font: inherit; font-weight: 700; font-size: 16px; letter-spacing: 0.08em; padding: 12px 22px; border-radius: 10px; border: 0; cursor: pointer; color: #05060B; background: var(--gold); box-shadow: 0 0 18px rgba(255, 216, 74, 0.4); }
 button.secondary { background: transparent; color: var(--text); border: 1px solid var(--dim); box-shadow: none; }
-button:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+button:focus-visible, button.pad-focus, input.pad-focus { outline: 3px solid #fff; outline-offset: 3px; }
+button:disabled { opacity: 0.45; cursor: default; box-shadow: none; }
+.modes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.mode { display: flex; flex-direction: column; gap: 10px; padding: 14px; border-radius: 12px; background: #0B0E1A; border: 1px solid rgba(255, 255, 255, 0.08); }
+.mode h3 { margin: 0; font-family: 'Orbitron', sans-serif; font-size: 14px; letter-spacing: 0.12em; color: var(--muted); }
+.mode .row { gap: 8px; }
+#code { width: 110px; letter-spacing: 0.2em; }
+#net-status { min-height: 18px; margin: 0; font-size: 14px; color: #FF8FA0; }
+#net-status.ok { color: var(--muted); }
+#pad-hint { display: none; color: var(--cyan); }
+#pad-hint.on { display: inline-flex; gap: 4px; }
+.lobby-code { font-family: 'Orbitron', sans-serif; font-size: 64px; font-weight: 800; letter-spacing: 0.18em; color: var(--gold); margin: 0; }
+.lobby-names { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; }
+.lobby-names div { padding: 7px 8px; border-radius: 8px; background: #0B0E1A; font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lobby-names div.bot { color: var(--dim); font-weight: 400; }
+.lobby-names div.me { color: var(--gold); }
+#ping-stat { display: none; }
+#ping-stat.on { display: flex; }
 .stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
 .stats div { background: #0B0E1A; border-radius: 10px; padding: 10px 12px; }
 .stats b { display: block; font-family: 'Orbitron', sans-serif; font-size: 22px; }
@@ -89,7 +107,7 @@ button:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
   <canvas id="game" aria-label="Game view"></canvas>
 
   <div id="hud-me" class="panel">
-    <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px"><div id="me-name">YOU</div><div class="label">YOU</div></div>
+    <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px"><div id="me-name">YOU</div><div class="label" id="me-tag">YOU</div></div>
     <div id="me-lives"></div>
     <div id="me-where"></div>
   </div>
@@ -98,6 +116,7 @@ button:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
     <div class="stat"><div id="remaining">25</div><div class="label">REMAINING</div></div>
     <div class="vr"></div>
     <div class="stat"><div id="clock">0:00</div><div class="label" id="clock-label">MATCH</div></div>
+    <div class="stat" id="ping-stat"><div id="ping" style="font-family:'Orbitron',sans-serif;font-size:20px;font-weight:600">0</div><div class="label">PING MS</div></div>
   </div>
 
   <div id="hud-power" class="panel">
@@ -136,19 +155,46 @@ button:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
         <li>Clear a maze to spawn its fruit. Eating it refills the maze and raises its level. Raid a rival's fruit to reload your home power pellets.</li>
         <li>Pellets charge your power-up (double away from home): <b>Blackout</b>, <b>Frenzy</b> or <b>Daze</b>. Grab airdrops too.</li>
       </ul>
-      <div class="keys desk-only"><span><kbd>←↑↓→</kbd> / <kbd>WASD</kbd> move</span><span><kbd>Space</kbd> use power-up</span><span><kbd>P</kbd> pause</span><span><kbd>M</kbd> mute</span></div>
+      <div class="keys desk-only"><span><kbd>←↑↓→</kbd> / <kbd>WASD</kbd> move</span><span><kbd>Space</kbd> use power-up</span><span><kbd>P</kbd> pause</span><span><kbd>M</kbd> mute</span><span id="pad-hint">Controller: stick / d-pad move · <kbd>A</kbd> power-up · <kbd>Start</kbd> pause</span></div>
       <div id="touch-hint" class="keys">Swipe to move · tap the power-up slot to use it</div>
       <div class="row">
         <label for="name" class="label">YOUR NAME</label>
         <input id="name" type="text" maxlength="10" placeholder="ACE" autocomplete="off" spellcheck="false">
-        <button id="play">PLAY</button>
       </div>
+      <div class="modes">
+        <div class="mode">
+          <h3>SOLO</h3>
+          <p class="sub" style="font-size:14px">You against 24 CPU players.</p>
+          <div class="row"><button id="play">PLAY SOLO</button></div>
+        </div>
+        <div class="mode" id="online-box">
+          <h3>ONLINE</h3>
+          <div class="row"><button id="quick">QUICK PLAY</button><button id="create" class="secondary">CREATE ROOM</button></div>
+          <div class="row">
+            <label for="code" class="label">CODE</label>
+            <input id="code" type="text" maxlength="4" placeholder="ABCD" autocomplete="off" spellcheck="false">
+            <button id="join" class="secondary">JOIN</button>
+          </div>
+        </div>
+      </div>
+      <p id="net-status" class="ok" role="status"></p>
+    </div>
+  </div>
+
+  <div id="screen-lobby" class="screen">
+    <div class="card">
+      <p class="label" id="lobby-kind">QUICK PLAY</p>
+      <p class="lobby-code" id="lobby-code"></p>
+      <p class="sub" id="lobby-sub"></p>
+      <div class="lobby-names" id="lobby-names"></div>
+      <div class="row"><button id="lobby-start">START MATCH</button><button id="lobby-leave" class="secondary">LEAVE</button></div>
     </div>
   </div>
 
   <div id="screen-pause" class="screen">
     <div class="card" style="width:420px;align-items:center;text-align:center">
-      <h2 class="title" style="font-size:40px">PAUSED</h2>
+      <h2 class="title" style="font-size:40px" id="pause-title">PAUSED</h2>
+      <p class="sub" id="pause-sub" style="display:none">Online matches keep running while this menu is open.</p>
       <div class="row"><button id="resume">RESUME</button><button id="quit" class="secondary">NEW MATCH</button></div>
     </div>
   </div>

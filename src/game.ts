@@ -14,10 +14,16 @@ export const mazeName = (idx: number) => 'ABCDE'[idx % C.GRID] + (Math.floor(idx
 
 export interface GameOptions {
   seed: number;
+  /** Offline: one human (player 0) against bots. */
   human: boolean;
   humanName?: string;
+  /** Online: these names are players 0..n-1 (humans); bots fill the rest. Overrides `human`. */
+  humans?: string[];
   countdown?: number; // seconds of "3, 2, 1, GO" before play starts
 }
+
+/** Steering frame value meaning "no movement this frame". */
+export const NET_HOLD = -2;
 
 export class Game {
   readonly rng: Rng;
@@ -57,7 +63,7 @@ export class Game {
         idx: i, mx, my, ox: mx * C.MW, oy: my * C.MH, layout,
         pellets: new Uint8Array(layout.pellets.length), dotsLeft: 0, level: 1, owner: -1,
         collapsed: false, collapseTimer: 0, frightTimer: 0, frightGen: 0, hitstop: 0, combo: 0,
-        board: 'full', emptyQuadrant: -1, fruitTimer: 0,
+        board: 'full', emptyQuadrant: -1, fruitTimer: 0, pelletVer: 0,
         mode: 'scatter', modeTimer: C.SCATTER_TIME, frenzy: 0, frenzyWarn: 0, blackout: 0, blackoutWarn: 0,
         effectBy: -1, fruit: false, raiderCount: 0,
       });
@@ -66,18 +72,22 @@ export class Game {
     }
     const homes = this.rng.shuffle([...Array(C.PLAYERS).keys()]);
     const names = this.rng.shuffle([...C.BOT_NAMES]);
+    const humans = opts.humans ?? (opts.human ? [opts.humanName ?? 'YOU'] : []);
+    const taken = new Set(humans.map((n) => n.toUpperCase()));
+    const botNames = names.filter((n) => !taken.has(n));
     for (let i = 0; i < C.PLAYERS; i++) {
-      const human = opts.human && i === 0;
+      const human = i < humans.length;
       const home = homes[i];
       const p: Player = {
-        id: i, name: human ? (opts.humanName ?? 'YOU') : names[(i - (opts.human ? 1 : 0)) % names.length],
+        id: i, name: human ? humans[i] : botNames[(i - humans.length) % botNames.length],
         color: C.PLAYER_COLORS[i % C.PLAYER_COLORS.length], human, home, maze: home,
         x: 0, y: 0, dir: LEFT, next: LEFT, face: LEFT, lives: C.LIVES, state: 'alive', timer: 0,
         invuln: 0, phase: 0, phaseCd: 0, lastPhased: -1, daze: 0, dazeCharge: 0, charge: 0, slot: null, placement: 0,
         stats: { dots: 0, ghosts: 0, raidersSent: 0, fruits: 0, powerUps: 0, outAt: 0 },
         bot: human ? null : makeBrain(this.rng),
+        netFrames: null,
       };
-      if (human) this.humanId = i;
+      if (human && !opts.humans) this.humanId = i;
       this.mazes[home].owner = i;
       this.placeAtSpawn(p);
       p.invuln = 1.5;
@@ -100,6 +110,27 @@ export class Game {
     if (notable) {
       this.feed.push(ev);
       if (this.feed.length > 40) this.feed.shift();
+    }
+  }
+
+  /** Rebuilds the per-maze player lists (the client mirror calls this; step() does it itself). */
+  rebuildInMaze() {
+    for (const list of this.inMaze) list.length = 0;
+    for (const p of this.players) {
+      if (p.state === 'out') continue;
+      p.maze = this.mazeAt(p.x, p.y);
+      if (p.state === 'alive') this.inMaze[p.maze].push(p);
+    }
+  }
+
+  /** Online: hands a player to a CPU brain (disconnect) or back to its client (reconnect). */
+  setBotControl(p: Player, on: boolean) {
+    if (on) {
+      p.bot = p.bot ?? makeBrain(this.rng);
+      p.netFrames = null;
+    } else {
+      p.bot = null;
+      p.netFrames = [];
     }
   }
 
@@ -219,6 +250,7 @@ export class Game {
       if (m.pellets[i] === P_DOT) dots++;
     }
     m.dotsLeft = dots;
+    m.pelletVer++;
     m.fruit = false;
     m.fruitTimer = board === 'empty' ? C.EMPTY_BOARD_FRUIT_DELAY : 0;
     this.emit('board', { maze: m.idx, text: board, n: m.emptyQuadrant });
@@ -379,9 +411,10 @@ export class Game {
       if (p.state === 'dying') {
         p.timer -= dt;
         if (p.timer <= 0) this.afterDeath(p);
+        if (p.netFrames) p.netFrames = [];
         continue;
       }
-      if (this.mazes[p.maze].hitstop > 0) continue;
+      if (this.mazes[p.maze].hitstop > 0) { if (p.netFrames) p.netFrames = []; continue; }
       if (p.invuln > 0) p.invuln = Math.max(0, p.invuln - dt);
       if (p.phase > 0) { p.phase = Math.max(0, p.phase - dt); if (p.phase === 0) p.lastPhased = -1; }
       if (p.phaseCd > 0) p.phaseCd = Math.max(0, p.phaseCd - dt);
@@ -390,32 +423,49 @@ export class Game {
         if (p.dazeCharge <= 0) this.fireDaze(p);
       }
       if (p.bot) botUpdate(this, p, dt);
+      // Online players move once per steering frame their client sent (usually exactly
+      // one per tick), which lets the client replay its own frames to predict exactly.
+      const frames = p.netFrames;
+      if (frames) p.netFrames = [];
       if (p.daze > 0) {
         p.daze = Math.max(0, p.daze - dt);
         continue;
       }
-      const level = this.mazes[p.maze].level;
-      const ox = p.x, oy = p.y, oMaze = p.maze;
-      move(p, this.pacSpeed(level) * dt, {
-        canEnter: this.pacCanEnter,
-        tunnel: true,
-        atCenter: p.bot ? () => botDecide(this, p) : undefined,
-        cornerCut: C.CORNER_CUT,
-        onCorner: (cut, fx, fy, fdir) => this.onCorner(p, cut, fx, fy, fdir),
-      });
-      if (p.dir >= 0) p.face = p.dir;
-      p.maze = this.mazeAt(p.x, p.y);
-      if (Math.abs(wrapDelta(p.x - ox, C.WORLD_W)) > 2) {
-        this.emit('warp', { player: p.id, maze: p.maze, x: Math.round(ox), y: Math.round(oy), x2: p.x, y2: p.y });
-      } else if (p.maze !== oMaze) {
-        this.emit('door', { player: p.id, maze: p.maze, n: oMaze, x: p.x, y: p.y });
+      if (frames) {
+        for (const f of frames) {
+          if (f === NET_HOLD) continue; // the client was frozen for this frame
+          if (f >= 0) p.next = f;
+          this.movePlayer(p, dt);
+          if (p.state !== 'alive') break;
+        }
+      } else {
+        this.movePlayer(p, dt);
       }
-      this.eatAt(p);
-      if (p.slot === null && p.charge >= C.CHARGE_FULL) {
-        p.slot = this.rng.weighted<PowerKind>(['blackout', 'frenzy', 'daze'], [40, 40, 20]);
-        p.charge = 0;
-        this.emit('pickup', { player: p.id, text: p.slot, color: p.color });
-      }
+    }
+  }
+
+  private movePlayer(p: Player, dt: number) {
+    const level = this.mazes[p.maze].level;
+    const ox = p.x, oy = p.y, oMaze = p.maze;
+    move(p, this.pacSpeed(level) * dt, {
+      canEnter: this.pacCanEnter,
+      tunnel: true,
+      atCenter: p.bot ? () => botDecide(this, p) : undefined,
+      cornerCut: C.CORNER_CUT,
+      onCorner: (cut, fx, fy, fdir) => this.onCorner(p, cut, fx, fy, fdir),
+    });
+    if (p.dir >= 0) p.face = p.dir;
+    p.maze = this.mazeAt(p.x, p.y);
+    if (Math.abs(wrapDelta(p.x - ox, C.WORLD_W)) > 2) {
+      this.emit('warp', { player: p.id, maze: p.maze, x: Math.round(ox), y: Math.round(oy), x2: p.x, y2: p.y });
+    } else if (p.maze !== oMaze) {
+      this.emit('door', { player: p.id, maze: p.maze, n: oMaze, x: p.x, y: p.y });
+    }
+    this.eatAt(p);
+    if (p.slot === null && p.charge >= C.CHARGE_FULL) {
+      p.slot = this.rng.weighted<PowerKind>(['blackout', 'frenzy', 'daze'], [40, 40, 20]);
+      p.charge = 0;
+      this.emit('pickup', { player: p.id, text: p.slot, color: p.color });
     }
   }
 
@@ -465,6 +515,7 @@ export class Game {
       const home = this.mazes[p.home];
       if (!home.collapsed) {
         for (const i of home.layout.powerTiles) home.pellets[i] = P_POWER;
+        home.pelletVer++;
         text = `${p.name} raided ${this.players[m.owner].name}'s fruit — power pellets reloaded`;
         this.emit('reload', { player: p.id, maze: home.idx });
       }
@@ -744,6 +795,7 @@ export class Game {
     m.fruit = false;
     m.fruitTimer = 0;
     m.pellets.fill(0);
+    m.pelletVer++;
     m.dotsLeft = 0;
     m.frightTimer = 0;
     m.blackout = m.blackoutWarn = m.frenzy = m.frenzyWarn = 0;

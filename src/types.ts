@@ -32,6 +32,7 @@ export interface MazeState {
   board: 'full' | 'quadrant' | 'empty'; // how the current pellets were rolled
   emptyQuadrant: number; // 0..3 (TL, TR, BL, BR) when board === 'quadrant', else -1
   fruitTimer: number; // >0: fruit appears when it runs out (empty boards)
+  pelletVer: number; // bumped whenever pellets change other than by being eaten (for network sync)
 }
 
 // house: waiting; leaving: crawling out through the gate; active: in the maze;
@@ -92,6 +93,12 @@ export interface Player extends Mover {
   placement: number;
   stats: { dots: number; ghosts: number; raidersSent: number; fruits: number; powerUps: number; outAt: number };
   bot: BotBrain | null;
+  /**
+   * Online play: steering frames received from this player's client for the current
+   * tick (one queued direction per frame; the player moves one tick per frame). null for
+   * bots and offline play, where the player moves exactly once per tick.
+   */
+  netFrames: number[] | null;
 }
 
 export interface Airdrop {

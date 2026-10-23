@@ -74,8 +74,10 @@ export class Hud {
     // ---- top-left: lives and location
     const p = viewer ?? human;
     if (p) {
-      this.text('me-name', p.human ? p.name : `WATCHING ${p.name}`);
-      $('me-name').style.color = p.human ? '#FFD84A' : p.color;
+      const mine = p.id === game.humanId;
+      this.text('me-name', mine ? p.name : `WATCHING ${p.name}`);
+      this.text('me-tag', mine ? 'YOU' : p.human ? 'PLAYER' : 'CPU');
+      $('me-name').style.color = mine ? '#FFD84A' : p.color;
       let lives = '';
       for (let i = 0; i < C.LIVES; i++) lives += `<span class="life${i < p.lives ? '' : ' lost'}"></span>`;
       this.set('me-lives', lives + `<span class="muted">${p.lives === 1 ? 'last life' : p.lives + ' lives'}</span>`);

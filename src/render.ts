@@ -1116,7 +1116,7 @@ export class Renderer {
         ctx.textAlign = 'center';
         ctx.fillStyle = me ? '#FFD84A' : p.color;
         ctx.globalAlpha = me ? 1 : 0.85;
-        ctx.fillText(me ? 'YOU' : p.name, x, y - 30);
+        ctx.fillText(me && p.id === game.humanId ? 'YOU' : p.name, x, y - 30);
         ctx.globalAlpha = 1;
       }
     }

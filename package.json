@@ -2,16 +2,24 @@
   "name": "pacman-25",
   "version": "0.1.0",
   "private": true,
-  "description": "Prototype of a 25-player battle-royale maze chase: 5x5 wrapping world of procedural neon mazes, CPU opponents, raiders and power-ups.",
+  "description": "A 25-player battle-royale maze chase: 5x5 wrapping world of procedural neon mazes, CPU opponents, raiders and power-ups. Solo in the browser, or online through a Node game server.",
   "type": "module",
   "scripts": {
     "build": "node scripts/build.mjs",
     "dev": "node scripts/build.mjs --watch",
-    "typecheck": "tsc --noEmit",
+    "start": "node dist/server.mjs",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p server",
     "sim": "node scripts/sim.mjs"
   },
   "devDependencies": {
+    "@types/node": "^22.10.0",
     "esbuild": "^0.28.2",
     "typescript": "^6.0.3"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
   }
 }
