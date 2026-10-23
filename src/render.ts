@@ -21,7 +21,8 @@ const OY = 120;
 const PAD = 24;
 const MAZE_PX_W = C.MW * TS;
 const MAZE_PX_H = C.MH * TS;
-const GHOST_COLORS = ['#FF5A5F', '#34F5A5', '#E8ECFF', '#7FD8FF'];
+// Classic color coding by behavior: chaser red, ambusher pink, flanker cyan, shy orange.
+const GHOST_COLORS = ['#FF2E3E', '#FFA6E6', '#2EE6FF', '#FFAA3D'];
 const FRIGHT_PALETTE: [string, string, string] = ['#1F3BFF', '#6E8BFF', '#2A2FFF'];
 const WARP = { core: '#C77DFF', hot: '#F3E3FF', deep: '#7A3DFF' };
 const SLIDE_TIME = 0.2;
@@ -806,7 +807,7 @@ export class Renderer {
       if (!eyes) {
         let fill = GHOST_COLORS[g.kind % 4];
         if (fright) fill = m.frightTimer < 1.6 && Math.sin(this.time * 16) > 0 ? '#E8ECFF' : '#2340FF';
-        else if (m.frenzy > 0) fill = Math.sin(this.time * 12) > 0 ? '#FF3D2E' : GHOST_COLORS[g.kind % 4];
+        else if (m.frenzy > 0) fill = Math.sin(this.time * 12) > 0 ? '#FFF1C2' : GHOST_COLORS[g.kind % 4]; // white-hot flicker
         ctx.shadowColor = fill;
         ctx.shadowBlur = main ? 10 : 0;
         ctx.fillStyle = fill;

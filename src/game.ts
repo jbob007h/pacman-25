@@ -458,6 +458,18 @@ export class Game {
       if (g.state === 'leaving') { this.updateLeaving(g, dt); continue; }
       if (g.state === 'entering') { this.updateEntering(g, dt); continue; }
       if (g.emerge > 0) g.emerge = Math.max(0, g.emerge - dt);
+      if (g.state === 'eyes') {
+        // Safety net: eyes should always find the way home, but never let one wander forever.
+        g.timer += dt;
+        if (g.timer > 12) {
+          g.x = m.ox + C.HOUSE_EXIT.x;
+          g.y = m.oy + C.HOUSE_EXIT.y;
+          g.state = 'entering';
+          g.dir = -1;
+          g.next = -1;
+          continue;
+        }
+      }
       const canEnter = (tx: number, ty: number) => this.mazeAt(tx, ty) === g.maze && isWalkableCode(this.tileCode(tx, ty));
       move(g, this.ghostSpeed(g) * dt, {
         canEnter,
@@ -522,6 +534,7 @@ export class Game {
   private eatGhost(p: Player, g: Ghost) {
     const m = this.mazes[g.maze];
     g.state = 'eyes';
+    g.timer = 0;
     g.eatenGen = m.frightGen;
     p.stats.ghosts++;
     m.combo++;

@@ -34,7 +34,9 @@ On touch screens, swipe to move and tap the power-up slot.
   around. The side tunnels are violet warp portals that send you to the other side of the
   same maze.
 - **Ghosts** use the classic chase/scatter targeting against the nearest Pac-Man in
-  their own maze, and never leave it. They start slower than you, wait in the house for
+  their own maze, and never leave it. Colors follow the classic roles: red chases you
+  directly, pink aims ahead of you, cyan flanks using the red ghost's position, and
+  orange chases from afar but retreats when close. They start slower than you, wait in the house for
   3–15 seconds at the start (5 seconds after being eaten), and crawl out slowly before
   speeding up. Power pellets frighten every ghost in that maze for 5–7 seconds, and
   eating a ghost freezes that whole maze for a split second.

@@ -3,6 +3,7 @@
 // head for the nearest Pac-Man and sometimes wander.
 
 import * as C from './config';
+import { isWalkableCode } from './maze';
 import { DX, DY, opposite } from './movement';
 import type { Game } from './game';
 import type { Ghost, Player, Raider } from './types';
@@ -38,14 +39,57 @@ function towards(m: { x: number; y: number }, opts: number[], tx: number, ty: nu
   return best;
 }
 
+/**
+ * Shortest-path distance (in tiles) from every walkable tile of a maze layout to the
+ * ghost-house exit. Eyes follow this downhill. Greedy straight-line steering, which
+ * live ghosts use, can circle forever in some generated layouts.
+ */
+const homeDist = new WeakMap<object, Int16Array>();
+
+function homeField(game: Game, maze: number): Int16Array {
+  const layout = game.mazes[maze].layout;
+  let d = homeDist.get(layout);
+  if (d) return d;
+  d = new Int16Array(C.MW * C.MH).fill(-1);
+  const start = C.HOUSE_EXIT.y * C.MW + C.HOUSE_EXIT.x;
+  d[start] = 0;
+  const q = [start];
+  for (let h = 0; h < q.length; h++) {
+    const i = q[h];
+    const x = i % C.MW, y = Math.floor(i / C.MW);
+    for (let k = 0; k < 4; k++) {
+      const nx = x + DX[k], ny = y + DY[k];
+      if (nx < 0 || ny < 0 || nx >= C.MW || ny >= C.MH) continue;
+      const j = ny * C.MW + nx;
+      if (d[j] >= 0 || !isWalkableCode(layout.tiles[j])) continue;
+      d[j] = d[i] + 1;
+      q.push(j);
+    }
+  }
+  homeDist.set(layout, d);
+  return d;
+}
+
 export function chooseGhostDir(game: Game, g: Ghost, canEnter: CanEnter) {
-  const opts = options(g, canEnter);
-  if (opts.length === 0) { g.next = -1; return; }
   const m = game.mazes[g.maze];
   if (g.state === 'eyes') {
-    g.next = towards(g, opts, m.ox + C.HOUSE_EXIT.x, m.oy + C.HOUSE_EXIT.y);
+    const field = homeField(game, g.maze);
+    const cx = Math.round(g.x), cy = Math.round(g.y);
+    let best = -1, bd = Infinity;
+    for (let k = 0; k < 4; k++) {
+      // Eyes may turn around; they just take the shortest way home.
+      if (!canEnter(cx + DX[k], cy + DY[k])) continue;
+      const lx = cx + DX[k] - m.ox, ly = cy + DY[k] - m.oy;
+      if (lx < 0 || ly < 0 || lx >= C.MW || ly >= C.MH) continue;
+      const v = field[ly * C.MW + lx];
+      if (v >= 0 && v < bd) { bd = v; best = k; }
+    }
+    g.next = best;
+    if (best >= 0) g.dir = best;
     return;
   }
+  const opts = options(g, canEnter);
+  if (opts.length === 0) { g.next = -1; return; }
   if (game.isFrightened(g)) {
     g.next = game.rng.pick(opts);
     return;
