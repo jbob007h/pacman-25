@@ -71,7 +71,7 @@ export class Game {
         id: i, name: human ? (opts.humanName ?? 'YOU') : names[(i - (opts.human ? 1 : 0)) % names.length],
         color: C.PLAYER_COLORS[i % C.PLAYER_COLORS.length], human, home, maze: home,
         x: 0, y: 0, dir: LEFT, next: LEFT, face: LEFT, lives: C.LIVES, state: 'alive', timer: 0,
-        invuln: 0, daze: 0, dazeCharge: 0, charge: 0, slot: null, placement: 0,
+        invuln: 0, phase: 0, phaseCd: 0, lastPhased: -1, daze: 0, dazeCharge: 0, charge: 0, slot: null, placement: 0,
         stats: { dots: 0, ghosts: 0, raidersSent: 0, fruits: 0, powerUps: 0, outAt: 0 },
         bot: human ? null : makeBrain(this.rng),
       };
@@ -308,7 +308,10 @@ export class Game {
       if (m.collapsed) continue;
       if (m.hitstop > 0) { m.hitstop = Math.max(0, m.hitstop - dt); continue; }
       if (m.collapseTimer > 0) {
+        const before = Math.ceil(m.collapseTimer);
         m.collapseTimer -= dt;
+        const after = Math.ceil(m.collapseTimer);
+        if (after !== before && after > 0) this.emit('collapseTick', { maze: m.idx, n: after });
         if (m.collapseTimer <= 0) this.collapse(m);
         if (m.collapsed) continue;
       }
@@ -343,6 +346,8 @@ export class Game {
       }
       if (this.mazes[p.maze].hitstop > 0) continue;
       if (p.invuln > 0) p.invuln = Math.max(0, p.invuln - dt);
+      if (p.phase > 0) { p.phase = Math.max(0, p.phase - dt); if (p.phase === 0) p.lastPhased = -1; }
+      if (p.phaseCd > 0) p.phaseCd = Math.max(0, p.phaseCd - dt);
       if (p.dazeCharge > 0) {
         p.dazeCharge -= dt;
         if (p.dazeCharge <= 0) this.fireDaze(p);
@@ -358,6 +363,8 @@ export class Game {
         canEnter: this.pacCanEnter,
         tunnel: true,
         atCenter: p.bot ? () => botDecide(this, p) : undefined,
+        cornerCut: C.CORNER_CUT,
+        onCorner: (cut, fx, fy, fdir) => this.onCorner(p, cut, fx, fy, fdir),
       });
       if (p.dir >= 0) p.face = p.dir;
       p.maze = this.mazeAt(p.x, p.y);
@@ -542,17 +549,42 @@ export class Game {
         if (g.maze !== p.maze || g.state !== 'active') continue;
         if (dist2(p.x, p.y, g.x, g.y) > R2) continue;
         if (this.isFrightened(g)) this.eatGhost(p, g);
+        else if (p.phase > 0) this.phaseThrough(p, g.id, g.x, g.y, 'ghost', g.kind);
         else if (p.invuln <= 0) { this.kill(p, 'ghost'); break; }
       }
       if (p.state !== 'alive' || p.invuln > 0) continue;
       for (const r of this.raiders) {
         if (r.maze !== p.maze || !this.raiderHarmful(r)) continue;
         if (dist2(p.x, p.y, r.x, r.y) <= R2) {
+          if (p.phase > 0) { this.phaseThrough(p, r.id, r.x, r.y, 'raider', r.sender); continue; }
           this.kill(p, 'raider', r.sender);
           break;
         }
       }
     }
+  }
+
+  /** A turn queued before the corner was taken early: sparks, and maybe a pass-through window. */
+  private onCorner(p: Player, cut: number, fx: number, fy: number, fdir: number) {
+    const granted = p.phaseCd <= 0;
+    if (granted) {
+      p.phase = C.PHASE_TIME;
+      p.phaseCd = C.PHASE_COOLDOWN;
+    }
+    this.emit('corner', { player: p.id, maze: p.maze, x: p.x, y: p.y, x2: fx, y2: fy, n: fdir, text: granted ? 'phase' : '', color: p.color });
+    void cut;
+  }
+
+  /** Passing through an enemy during a cornering window: no death, a freeze-frame and a big effect. */
+  private phaseThrough(p: Player, id: number, x: number, y: number, what: 'ghost' | 'raider', ref: number) {
+    if (p.lastPhased === id) return;
+    p.lastPhased = id;
+    // Keep the window open until we're clear of this enemy.
+    p.phase = Math.max(p.phase, 0.15);
+    const m = this.mazes[p.maze];
+    m.hitstop = Math.max(m.hitstop, C.PHASE_HITSTOP);
+    const color = what === 'raider' ? this.players[ref].color : ['#FF2E3E', '#FFA6E6', '#2EE6FF', '#FFAA3D'][ref % 4];
+    this.emit('phase', { player: p.id, maze: p.maze, x, y, x2: p.x, y2: p.y, color, text: what });
   }
 
   private eatGhost(p: Player, g: Ghost) {

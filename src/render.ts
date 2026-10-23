@@ -25,6 +25,8 @@ const MAZE_PX_H = C.MH * TS;
 const GHOST_COLORS = ['#FF2E3E', '#FFA6E6', '#2EE6FF', '#FFAA3D'];
 const FRIGHT_PALETTE: [string, string, string] = ['#1F3BFF', '#6E8BFF', '#2A2FFF'];
 const WARP = { core: '#C77DFF', hot: '#F3E3FF', deep: '#7A3DFF' };
+const DANGER_PALETTE: [string, string, string] = ['#FF2F4A', '#FF8A3D', '#FF1F3A'];
+const PHASE_COLORS = ['#FF3DCB', '#2EE6FF', '#FFFFFF'];
 const SLIDE_TIME = 0.2;
 const REDUCED_MOTION = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
 
@@ -58,6 +60,12 @@ export class Renderer {
   private stars: Star[] = [];
   private shake = 0;
   private goTimer = 0;
+  private punch = 0; // brief zoom-in pulse
+  /** Recent corner cuts: draw the player sliding diagonally across the corner, plus a skid arc. */
+  private cornerFx = new Map<number, { dx: number; dy: number; life: number }>();
+  private skids: { x: number; y: number; fromDir: number; toDir: number; life: number; color: string; hot: boolean }[] = [];
+  /** Pass-through effects: lightning between player and enemy, RGB afterimages. */
+  private phaseFx: { player: number; ex: number; ey: number; color: string; life: number }[] = [];
   private flash = { color: '#FFFFFF', alpha: 0 };
   private nearMiss = 0;
   private frameDt = 0;
@@ -155,6 +163,47 @@ export class Renderer {
             this.ring(p.x, p.y, '#7DE3FF', 0.7, 0.5, 22, 5);
           }
           break;
+        case 'corner': {
+          const p = game.players[e.player!];
+          const fromDir = e.n ?? p.dir;
+          const toDir = p.dir;
+          const hot = e.text === 'phase';
+          const near = e.maze === vm;
+          // Sparks spray along the old direction of travel, away from the turn.
+          const n = near ? (hot ? 16 : 9) : 4;
+          for (let i = 0; i < n; i++) {
+            const spread = (Math.random() - 0.5) * 5;
+            const sp = 5 + Math.random() * 6;
+            const vx = DX[fromDir] * sp - DX[toDir] * sp * 0.45 + (DY[fromDir] !== 0 ? spread : 0) * 0.6;
+            const vy = DY[fromDir] * sp - DY[toDir] * sp * 0.45 + (DX[fromDir] !== 0 ? spread : 0) * 0.6;
+            const color = hot ? (Math.random() < 0.5 ? '#FFFFFF' : '#7DFFF3') : (Math.random() < 0.6 ? '#FFD84A' : '#FFF3D1');
+            this.particles.push({ x: e.x!, y: e.y!, vx, vy, life: 0.3 + Math.random() * 0.2, max: 0.5, color, size: 2 + Math.random() * 2 });
+          }
+          this.cornerFx.set(p.id, { dx: e.x2! - e.x!, dy: e.y2! - e.y!, life: 0.09 });
+          this.skids.push({ x: e.x!, y: e.y!, fromDir, toDir, life: 0.3, color: hot ? '#7DFFF3' : '#FFD84A', hot });
+          if (this.skids.length > 30) this.skids.shift();
+          break;
+        }
+        case 'phase': {
+          const p = game.players[e.player!];
+          this.phaseFx.push({ player: p.id, ex: e.x!, ey: e.y!, color: e.color ?? '#FFFFFF', life: 0.55 });
+          this.ring(e.x2!, e.y2!, '#FFFFFF', 0.35, 0.3, 3, 6);
+          this.ring(e.x2!, e.y2!, '#2EE6FF', 0.5, 0.4, 5, 3);
+          this.ring(e.x2!, e.y2!, '#FF3DCB', 0.6, 0.5, 6.5, 2);
+          this.burst(e.x2!, e.y2!, '#7DFFF3', 22, 8, 0.6);
+          this.burst(e.x!, e.y!, e.color ?? '#FFFFFF', 18, 6, 0.6);
+          this.popup(e.x2!, e.y2!, 'PHASED!', '#7DFFF3', 30);
+          if (mine(e)) { this.addShake(7); this.addFlash('#BFFBFF', 0.32); this.punch = 1; }
+          else if (e.maze === vm) this.addShake(3);
+          break;
+        }
+        case 'collapseTick':
+          if (e.maze === vm) {
+            const urgent = (e.n ?? 9) <= 3;
+            this.addShake(urgent ? 7 : 3);
+            this.addFlash('#FF2F4A', urgent ? 0.28 : 0.14);
+          }
+          break;
         case 'count':
           if (e.n === 0) { this.goTimer = 0.8; this.addFlash('#FFD84A', 0.25); this.addShake(6); }
           break;
@@ -219,9 +268,9 @@ export class Renderer {
 
   // ---------- wall art ----------
 
-  private wallCanvas(game: Game, idx: number, variant: 'normal' | 'fright' = 'normal'): HTMLCanvasElement {
+  private wallCanvas(game: Game, idx: number, variant: 'normal' | 'fright' | 'danger' = 'normal'): HTMLCanvasElement {
     const m = game.mazes[idx];
-    const key = `${idx}:${m.collapsed ? 'x' : variant === 'fright' ? 'f' : m.level}`;
+    const key = `${idx}:${m.collapsed ? 'x' : variant === 'fright' ? 'f' : variant === 'danger' ? 'd' : m.level}`;
     let cv = this.wallCache.get(key);
     if (cv) {
       // keep recently used entries at the end (LRU order)
@@ -252,7 +301,7 @@ export class Renderer {
       g.lineWidth = 3;
       g.stroke(path);
     } else {
-      const [c1, c2, c3] = variant === 'fright' ? FRIGHT_PALETTE : C.LEVEL_PALETTE[m.level];
+      const [c1, c2, c3] = variant === 'fright' ? FRIGHT_PALETTE : variant === 'danger' ? DANGER_PALETTE : C.LEVEL_PALETTE[m.level];
       const grad = g.createLinearGradient(0, 0, MAZE_PX_W, MAZE_PX_H);
       grad.addColorStop(0, c1);
       grad.addColorStop(0.3, c2);
@@ -299,6 +348,9 @@ export class Renderer {
       this.portalFlash.clear();
       this.mazeCard = null;
       this.layerKey = '';
+      this.cornerFx.clear();
+      this.skids = [];
+      this.phaseFx = [];
       this.viewMaze = -1;
     }
     this.time += dt;
@@ -343,7 +395,8 @@ export class Renderer {
     this.shake *= Math.exp(-dt * 10);
     if (this.shake < 0.2) this.shake = 0;
     const amp = REDUCED_MOTION ? 0 : this.shake;
-    const zoom = 1 + this.nearMiss * 0.012;
+    this.punch = Math.max(0, this.punch - dt * 4);
+    const zoom = 1 + this.nearMiss * 0.012 + this.punch * 0.03;
     // Only touch the transform when needed: an identity-but-not-quite matrix knocks
     // the big wall bitmaps off the fast pixel-aligned blit path.
     if (amp > 0) ctx.translate(Math.round((Math.random() - 0.5) * amp), Math.round((Math.random() - 0.5) * amp));
@@ -356,10 +409,13 @@ export class Renderer {
     this.drawMazes(game);
     this.drawPortals(game);
     this.drawPellets(game);
+    this.drawCollapseWarnings(game);
+    this.drawSkids(dt);
     this.drawPickups(game);
     this.drawGhosts(game);
     this.drawRaiders(game);
     this.drawPlayers(game, viewer, dt);
+    this.drawPhaseFx(game, dt);
     this.drawEffects(dt);
     this.drawMazeOverlays(game);
 
@@ -468,8 +524,7 @@ export class Renderer {
       const { px, py } = this.mazePos(m);
       if (px > VIEW_W || py > VIEW_H || px + MAZE_PX_W < 0 || py + MAZE_PX_H < 0) continue;
       const main = m.idx === this.viewMaze;
-      let base = main ? 1 : 0.45;
-      if (m.collapseTimer > 0) base *= 0.55 + 0.45 * Math.abs(Math.sin(this.time * 6));
+      const base = main ? 1 : 0.45;
       const dx = px - PAD, dy = py - PAD, w = MAZE_PX_W + PAD * 2, h = MAZE_PX_H + PAD * 2;
       // Power pellet: walls flood blue, then flicker back as the power runs out.
       const fk = this.frightMix(m);
@@ -480,6 +535,12 @@ export class Renderer {
       if (fk > 0) {
         ctx.globalAlpha = base * fk;
         ctx.drawImage(this.wallCanvas(game, m.idx, 'fright'), dx, dy, w, h);
+      }
+      // Collapsing: walls throb red in time with the countdown.
+      if (m.collapseTimer > 0) {
+        const frac = Math.ceil(m.collapseTimer) - m.collapseTimer; // 0 at each tick
+        ctx.globalAlpha = base * (0.55 + 0.45 * (1 - frac));
+        ctx.drawImage(this.wallCanvas(game, m.idx, 'danger'), dx, dy, w, h);
       }
       // Level-up / hit-pause flare: brighten the walls additively.
       const lf = this.levelFlash.get(m.idx) ?? 0;
@@ -570,8 +631,9 @@ export class Renderer {
       }
       const pal = C.LEVEL_PALETTE[n.level];
       const closing = n.collapseTimer > 0;
+      const exit = m.collapseTimer > 0 && !closing; // our maze is collapsing: this is a way out
       const blink = closing && Math.sin(this.time * 12) > 0;
-      const col = closing ? (blink ? '#FF4D5E' : '#FFD0D5') : pal[1];
+      const col = closing ? (blink ? '#FF4D5E' : '#FFD0D5') : exit ? '#3CF29A' : pal[1];
       // Floor glow fading inward from the threshold.
       const depth = TS * 2.6;
       const g = ctx.createLinearGradient(bx, by, bx - ax * depth, by - ay * depth);
@@ -597,7 +659,7 @@ export class Renderer {
         const off = -TS * 1.6 + t * TS * 2.2;
         const tx = bx + ax * off, ty = by + ay * off;
         ctx.globalAlpha = Math.sin(t * Math.PI) * 0.9;
-        ctx.strokeStyle = closing ? col : '#FFFFFF';
+        ctx.strokeStyle = closing || exit ? col : '#FFFFFF';
         ctx.lineWidth = 3;
         ctx.beginPath();
         ctx.moveTo(tx - ax * 7 - ay * 9, ty - ay * 7 - ax * 9);
@@ -607,14 +669,16 @@ export class Renderer {
       }
       ctx.globalAlpha = 1;
       // Destination label just outside the door.
-      ctx.font = '700 12px "Chakra Petch", sans-serif';
+      ctx.font = closing || exit ? '800 15px "Chakra Petch", sans-serif' : '700 12px "Chakra Petch", sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      const label = closing ? `${mazeName(n.idx)} CLOSING ${Math.ceil(n.collapseTimer)}` : `${mazeName(n.idx)} · LV ${n.level}`;
-      const lx = bx + ax * (ax !== 0 ? 48 : 0), ly = by + ay * 22;
+      const label = closing ? `${mazeName(n.idx)} CLOSING ${Math.ceil(n.collapseTimer)}` : exit ? `EXIT → ${mazeName(n.idx)}` : `${mazeName(n.idx)} · LV ${n.level}`;
       const tw = ctx.measureText(label).width + 14;
-      ctx.fillStyle = 'rgba(5,6,11,0.8)';
-      roundRect(ctx, lx - tw / 2, ly - 10, tw, 20, 10);
+      // Side-door labels sit fully outside the maze edge so the chevrons don't cover them.
+      const lx = bx + ax * (ax !== 0 ? tw / 2 + 10 : 0), ly = by + ay * 22;
+      const th = closing || exit ? 26 : 20;
+      ctx.fillStyle = 'rgba(5,6,11,0.85)';
+      roundRect(ctx, lx - tw / 2, ly - th / 2, tw, th, th / 2);
       ctx.fill();
       ctx.strokeStyle = hexA(col, 0.7);
       ctx.lineWidth = 1;
@@ -928,7 +992,16 @@ export class Renderer {
     const ctx = this.ctx;
     for (const p of game.players) {
       if (p.state === 'out') { this.trails.delete(p.id); continue; }
-      const x = this.sx(p.x), y = this.sy(p.y);
+      let x = this.sx(p.x), y = this.sy(p.y);
+      const cf = this.cornerFx.get(p.id);
+      if (cf) {
+        // Ease out of the pre-cut position: reads as sliding diagonally across the corner.
+        const k = cf.life / 0.09;
+        x += cf.dx * TS * k;
+        y += cf.dy * TS * k;
+        cf.life -= dt;
+        if (cf.life <= 0) this.cornerFx.delete(p.id);
+      }
       // trail
       let tr = this.trails.get(p.id);
       if (!tr) { tr = []; this.trails.set(p.id, tr); }
@@ -985,7 +1058,24 @@ export class Renderer {
       }
       ctx.rotate(spin);
       ctx.scale(scale, scale);
-      const color = p.daze > 0 ? '#8A93B8' : p.color;
+      if (p.phase > 0 || this.phaseFx.some((f) => f.player === p.id)) {
+        // Phasing: chromatic split copies behind the body.
+        ctx.globalCompositeOperation = 'lighter';
+        const j = 2.5 + Math.sin(this.time * 40) * 1.2;
+        for (let k = 0; k < 2; k++) {
+          ctx.save();
+          ctx.translate(k === 0 ? -j : j, k === 0 ? j * 0.4 : -j * 0.4);
+          ctx.rotate(Math.PI / 4);
+          ctx.globalAlpha = alpha * 0.7;
+          ctx.fillStyle = PHASE_COLORS[k];
+          roundRect(ctx, -11, -11, 22, 22, 5);
+          ctx.fill();
+          ctx.restore();
+        }
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.globalAlpha = alpha * 0.85;
+      }
+      const color = p.daze > 0 ? '#8A93B8' : p.phase > 0 ? '#E9FFFE' : p.color;
       ctx.shadowColor = color;
       ctx.shadowBlur = me ? 16 : main ? 8 : 0;
       ctx.fillStyle = color;
@@ -1091,7 +1181,7 @@ export class Renderer {
     if (!m) return;
     const { px, py } = this.mazePos(m);
     // Telegraph incoming Blackout/Frenzy/collapse with a flashing border.
-    const warn = m.blackoutWarn > 0 ? '#FF3DCB' : m.frenzyWarn > 0 ? '#FF5A36' : m.collapseTimer > 0 ? '#FF4D5E' : null;
+    const warn = m.blackoutWarn > 0 ? '#FF3DCB' : m.frenzyWarn > 0 ? '#FF5A36' : null;
     if (warn && Math.sin(this.time * 18) > -0.2) {
       ctx.strokeStyle = warn;
       ctx.lineWidth = 6;
@@ -1107,6 +1197,130 @@ export class Renderer {
       g.addColorStop(1, `rgba(255,60,40,${0.12 + 0.06 * Math.sin(this.time * 8)})`);
       ctx.fillStyle = g;
       ctx.fillRect(px, py, MAZE_PX_W, MAZE_PX_H);
+    }
+  }
+
+  /** Corner skids: a quick bright arc hugging the inside of the turn. */
+  private drawSkids(dt: number) {
+    const ctx = this.ctx;
+    for (const s of this.skids) s.life -= dt;
+    this.skids = this.skids.filter((s) => s.life > 0);
+    ctx.lineCap = 'round';
+    for (const s of this.skids) {
+      const x = this.sx(s.x), y = this.sy(s.y);
+      if (!this.visible(x, y)) continue;
+      // Arc from "coming in" (opposite of fromDir) to "going out" (toDir), centered on the inside corner.
+      const icx = x - DX[s.fromDir] * 12 + DX[s.toDir] * 12;
+      const icy = y - DY[s.fromDir] * 12 + DY[s.toDir] * 12;
+      const a0 = Math.atan2(-DY[s.toDir], -DX[s.toDir]);
+      const a1 = Math.atan2(DY[s.fromDir], DX[s.fromDir]);
+      let delta = a1 - a0;
+      while (delta > Math.PI) delta -= Math.PI * 2;
+      while (delta < -Math.PI) delta += Math.PI * 2;
+      ctx.globalAlpha = (s.life / 0.3) * (s.hot ? 1 : 0.7);
+      ctx.strokeStyle = s.color;
+      ctx.lineWidth = s.hot ? 4 : 3;
+      ctx.beginPath();
+      ctx.arc(icx, icy, 12, a0, a0 + delta, delta < 0);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  /** Lightning between a phasing player and the enemy it slipped through. */
+  private drawPhaseFx(game: Game, dt: number) {
+    const ctx = this.ctx;
+    for (const f of this.phaseFx) f.life -= dt;
+    this.phaseFx = this.phaseFx.filter((f) => f.life > 0);
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    for (const f of this.phaseFx) {
+      const p = game.players[f.player];
+      const ax = this.sx(p.x), ay = this.sy(p.y), bx = this.sx(f.ex), by = this.sy(f.ey);
+      if (!this.visible(ax, ay, 200)) continue;
+      const t = f.life / 0.55;
+      for (const [color, width] of [[f.color, 5], ['#7DFFF3', 2.5], ['#FFFFFF', 1.2]] as [string, number][]) {
+        ctx.strokeStyle = color;
+        ctx.lineWidth = width;
+        ctx.globalAlpha = t;
+        ctx.beginPath();
+        ctx.moveTo(ax, ay);
+        const segs = 7;
+        for (let i = 1; i < segs; i++) {
+          const u = i / segs;
+          const jx = (Math.random() - 0.5) * 22, jy = (Math.random() - 0.5) * 22;
+          ctx.lineTo(ax + (bx - ax) * u + jx, ay + (by - ay) * u + jy);
+        }
+        ctx.lineTo(bx, by);
+        ctx.stroke();
+      }
+      // An afterimage left where the enemy was.
+      ctx.globalAlpha = t * 0.6;
+      ctx.strokeStyle = f.color;
+      ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(bx, by, 26 + (1 - t) * 30, 0, Math.PI * 2); ctx.stroke();
+    }
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.globalAlpha = 1;
+  }
+
+  /** Collapsing mazes: throbbing red tint, hazard border and a huge countdown, impossible to miss. */
+  private drawCollapseWarnings(game: Game) {
+    const ctx = this.ctx;
+    for (const m of this.nineMazes(game)) {
+      if (m.collapsed || m.collapseTimer <= 0) continue;
+      const { px, py } = this.mazePos(m);
+      const x0 = Math.max(px, 0), y0 = Math.max(py, 0);
+      const x1 = Math.min(px + MAZE_PX_W, VIEW_W), y1 = Math.min(py + MAZE_PX_H, VIEW_H);
+      if (x1 <= x0 || y1 <= y0) continue;
+      const main = m.idx === this.viewMaze;
+      const n = Math.ceil(m.collapseTimer);
+      const frac = n - m.collapseTimer; // 0 right at each tick, rising to 1
+      const pulse = 1 - frac;
+      const urgent = n <= 3;
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(px, py, MAZE_PX_W, MAZE_PX_H);
+      ctx.clip();
+      // Red wash that throbs on every second.
+      ctx.fillStyle = `rgba(255,30,60,${(main ? 0.06 : 0.12) + (urgent ? 0.16 : 0.09) * pulse})`;
+      ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+      // Crawling hazard stripes around the inside edge.
+      ctx.lineWidth = main ? 12 : 10;
+      ctx.setLineDash([18, 18]);
+      ctx.lineDashOffset = -this.time * 60;
+      ctx.strokeStyle = '#FF2F4A';
+      ctx.strokeRect(px + 6, py + 6, MAZE_PX_W - 12, MAZE_PX_H - 12);
+      ctx.lineDashOffset = -this.time * 60 + 18;
+      ctx.strokeStyle = '#FFD84A';
+      ctx.strokeRect(px + 6, py + 6, MAZE_PX_W - 12, MAZE_PX_H - 12);
+      ctx.setLineDash([]);
+      // The countdown itself: huge behind the play in this maze, clamped into view for neighbors.
+      const cx = main ? px + MAZE_PX_W / 2 : Math.min(Math.max(px + MAZE_PX_W / 2, x0 + 70), x1 - 70);
+      const cy = main ? py + MAZE_PX_H / 2 : Math.min(Math.max(py + MAZE_PX_H / 2, y0 + 50), y1 - 50);
+      const size = main ? 300 : Math.min(110, (y1 - y0) * 0.75, (x1 - x0) * 0.6);
+      ctx.translate(cx, cy);
+      const sc = 1 + 0.18 * pulse * pulse;
+      ctx.scale(sc, sc);
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.font = `800 ${Math.round(size)}px "Orbitron", sans-serif`;
+      ctx.globalAlpha = main ? 0.22 + 0.4 * pulse : 0.75;
+      ctx.fillStyle = urgent ? '#FF2F4A' : '#FF6A5A';
+      ctx.fillText(String(n), 0, size * 0.04);
+      if (main) {
+        ctx.globalAlpha = 0.5 + 0.4 * pulse;
+        ctx.font = '800 30px "Orbitron", sans-serif';
+        ctx.fillStyle = '#FFE0E4';
+        ctx.fillText('COLLAPSING — GET OUT', 0, size * 0.62);
+      } else if (size >= 60) {
+        ctx.globalAlpha = 0.85;
+        ctx.font = '800 13px "Chakra Petch", sans-serif';
+        ctx.fillStyle = '#FFE0E4';
+        ctx.fillText('COLLAPSING', 0, size * 0.62);
+      }
+      ctx.restore();
     }
   }
 

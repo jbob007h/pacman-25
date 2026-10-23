@@ -112,6 +112,25 @@ export class Audio {
   zap() { this.hiss(0.3, 0.2, 2000); this.tone(freq(31), 0.25, 'sawtooth', 0.08, 0, freq(7)); }
   collapse() { this.tone(55, 1.2, 'sawtooth', 0.18, 0, 30); this.hiss(1.0, 0.18, 200); }
   airdrop() { this.tone(freq(24), 0.08, 'sine', 0.1); this.tone(freq(31), 0.2, 'sine', 0.1, 0.08); }
+  /** Collapse countdown alarm: a two-tone siren each second, sharper for the last three. */
+  collapseTick(n: number, near: boolean) {
+    const vol = near ? 0.05 : 0.11;
+    const urgent = n <= 3;
+    this.tone(freq(urgent ? 19 : 12), 0.14, 'sawtooth', vol);
+    this.tone(freq(urgent ? 24 : 7), 0.14, 'sawtooth', vol, 0.15);
+    if (urgent && !near) this.tone(55, 0.3, 'sine', 0.3, 0, 40);
+  }
+  /** Clean corner: a quick metallic grind; brighter when it opens a pass-through window. */
+  corner(hot: boolean) {
+    this.hiss(0.07, hot ? 0.09 : 0.05, 5000);
+    if (hot) this.tone(freq(31), 0.08, 'triangle', 0.06, 0, freq(36));
+  }
+  /** Phasing through an enemy: a reversed whoosh into a shimmering chord. */
+  phase() {
+    this.hiss(0.25, 0.12, 2500);
+    this.tone(freq(0), 0.3, 'sawtooth', 0.1, 0, freq(36));
+    [24, 31, 35, 40].forEach((s, i) => this.tone(freq(s), 0.35, 'triangle', 0.05, 0.08 + i * 0.03));
+  }
   /** Countdown beeps: 3, 2, 1 low; GO is a bright chord. */
   count(n: number) {
     if (n > 0) { this.tone(freq(12), 0.16, 'square', 0.1); return; }

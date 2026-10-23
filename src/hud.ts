@@ -144,13 +144,14 @@ export class Hud {
   private updateBanner(game: Game, viewer: Player | null, human: Player | undefined) {
     let text = '';
     let color = '#E9EDFF';
+    let danger = false;
     const v = viewer;
     if (v && v.state !== 'out') {
       const m = game.mazes[game.mazeAt(v.x, v.y)];
       const incoming = game.raiders.find((r) => !r.dead && r.maze === m.idx && r.materialize > 0);
       if (v.state === 'dying') { text = v.lives > 0 ? 'RESPAWNING AT HOME' : 'ELIMINATED'; color = '#FF7A87'; }
       else if (v.daze > 0) { text = `DAZED ${v.daze.toFixed(1)}`; color = '#7DE3FF'; }
-      else if (m.collapseTimer > 0) { text = `${mazeName(m.idx)} COLLAPSING — GET OUT ${Math.ceil(m.collapseTimer)}`; color = '#FF4D5E'; }
+      else if (m.collapseTimer > 0) { text = `⚠ ${mazeName(m.idx)} COLLAPSES IN ${Math.ceil(m.collapseTimer)} — GET OUT`; color = '#FF4D5E'; danger = true; }
       else if (game.inMaze[m.idx].some((q) => q !== v && q.dazeCharge > 0)) { text = 'DAZE CHARGING — LEAVE THE MAZE!'; color = '#7DE3FF'; }
       else if (incoming) { text = `RAIDERS INCOMING FROM ${game.players[incoming.sender].name}`; color = game.players[incoming.sender].color; }
       else if (m.blackoutWarn > 0) { text = 'BLACKOUT INCOMING'; color = '#FF7FDA'; }
@@ -167,6 +168,7 @@ export class Hud {
       this.text('banner', text);
       el.style.color = color;
       el.style.borderColor = color;
+      el.classList.toggle('danger', danger);
       el.classList.add('show');
     } else if (game.time > this.bannerUntil) {
       el.classList.remove('show');
@@ -195,6 +197,10 @@ export class Hud {
       ctx.fillStyle = c + '2E';
       ctx.fillRect(x, y, w, h);
       const flashing = m.collapseTimer > 0 && Math.floor(game.time * 4) % 2 === 0;
+      if (m.collapseTimer > 0) {
+        ctx.fillStyle = flashing ? 'rgba(255,47,74,0.75)' : 'rgba(255,47,74,0.35)';
+        ctx.fillRect(x, y, w, h);
+      }
       ctx.strokeStyle = flashing ? '#FF4D5E' : c;
       ctx.lineWidth = 1.5;
       ctx.setLineDash(viewer && m.idx === viewer.home ? [3, 2] : []);
@@ -202,6 +208,13 @@ export class Hud {
       ctx.strokeRect(x, y, w, h);
       ctx.setLineDash([]);
       if (m.fruit) { ctx.fillStyle = '#FF4D5E'; ctx.beginPath(); ctx.arc(x + w - 5, y + 5, 2.5, 0, Math.PI * 2); ctx.fill(); }
+      if (m.collapseTimer > 0) {
+        ctx.fillStyle = '#FFFFFF';
+        ctx.font = '800 16px Orbitron, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(String(Math.ceil(m.collapseTimer)), x + w / 2, y + h / 2 + 1);
+      }
     }
     if (viewer) {
       const vm = game.mazes[game.mazeAt(viewer.x, viewer.y)];

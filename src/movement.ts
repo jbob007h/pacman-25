@@ -38,6 +38,10 @@ export interface MoveOptions {
   canEnter: (tx: number, ty: number) => boolean;
   atCenter?: (m: Mover) => void;
   tunnel?: boolean; // may use the side tunnel warp
+  /** If set, a buffered perpendicular turn within this many tiles of a corner is taken early. */
+  cornerCut?: number;
+  /** Called when a corner is cut: the mover jumped ahead by `cut` tiles from (fromX, fromY). */
+  onCorner?: (cut: number, fromX: number, fromY: number, fromDir: number) => void;
 }
 
 /** Advances a mover by `dist` tiles. Returns true if it is stopped against a wall. */
@@ -82,6 +86,18 @@ export function move(m: Mover, dist: number, opt: MoveOptions): boolean {
       const p = horiz ? m.x : m.y;
       const s = DX[m.dir] + DY[m.dir];
       const d = s > 0 ? Math.ceil(p - EPS) - p : p - Math.floor(p + EPS);
+      // Corner cutting: a perpendicular turn queued on the approach is taken early.
+      if (opt.cornerCut && m.next >= 0 && m.next !== m.dir && m.next !== opposite(m.dir) && d <= opt.cornerCut) {
+        const ncx = horiz ? Math.round(m.x + s * d) : Math.round(m.x);
+        const ncy = horiz ? Math.round(m.y) : Math.round(m.y + s * d);
+        if (opt.canEnter(ncx + DX[m.next], ncy + DY[m.next])) {
+          const fx = m.x, fy = m.y, fdir = m.dir;
+          m.x = wrapX(ncx);
+          m.y = wrapY(ncy);
+          opt.onCorner?.(d, fx, fy, fdir);
+          continue; // now at the corner's center: the turn is applied there, for free
+        }
+      }
       const step = Math.min(dist, d);
       if (horiz) m.x += s * step; else m.y += s * step;
       dist -= step;

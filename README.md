@@ -27,9 +27,14 @@ On touch screens, swipe to move and tap the power-up slot.
 
 - **Start.** Every match opens with a 3-2-1 countdown. You can press a direction during
   it and you'll set off that way on GO.
+- **Cornering.** Press a turn before you reach a corner and you cut it, throwing sparks.
+  A clean corner also gives 0.3 seconds in which you pass straight through ghosts and
+  raiders (at most once every 1.2 seconds). Pressing the turn right at the corner gives
+  neither.
 - **Lives and homes.** You have 3 lives and no extra lives. You respawn in your home maze,
   and its ghosts go back to their house. When a player loses their last life, their home
-  maze flashes for 10 seconds and then collapses: its doors seal, and anyone still inside
+  maze counts down from 10 (red walls, a huge countdown, an alarm, and green EXIT
+  doors) and then collapses: its doors seal, and anyone still inside
   loses a life.
 - **The world.** Each maze has doors on all four edges leading to the neighboring maze,
   drawn as lit gates in the neighbor's colors with its name beside them. The grid wraps

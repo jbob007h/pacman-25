@@ -73,6 +73,13 @@ export const MAX_GHOSTS_PER_MAZE = 8; // overtime adds ghosts once mazes hit max
 
 export const COLLIDE_DIST = 0.6; // tiles
 
+// Cornering: a turn queued before reaching a corner cuts it by up to this many tiles,
+// throws sparks, and (if off cooldown) opens a short window to pass through enemies.
+export const CORNER_CUT = 0.35;
+export const PHASE_TIME = 0.3; // seconds of pass-through after a clean corner
+export const PHASE_COOLDOWN = 1.2; // seconds before another corner can grant it
+export const PHASE_HITSTOP = 0.12; // freeze-frame when you actually phase through something
+
 // Wall colors by maze level: [start, middle, end] of the neon gradient.
 export const LEVEL_PALETTE: Record<number, [string, string, string]> = {
   1: ['#2F6BFF', '#00D8FF', '#8A5CFF'],

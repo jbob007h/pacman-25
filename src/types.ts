@@ -79,6 +79,9 @@ export interface Player extends Mover {
   state: 'alive' | 'dying' | 'out';
   timer: number;
   invuln: number;
+  phase: number; // seconds left of pass-through after a clean corner
+  phaseCd: number; // cooldown before cornering can grant pass-through again
+  lastPhased: number; // id of the last enemy passed through (one effect per enemy)
   daze: number;
   dazeCharge: number;
   charge: number;
@@ -98,7 +101,7 @@ export interface Airdrop {
 export type EventKind =
   | 'dot' | 'power' | 'ghost' | 'death' | 'out' | 'collapseStart' | 'collapse' | 'fruitSpawn' | 'fruit'
   | 'raiders' | 'airdrop' | 'pickup' | 'blackout' | 'frenzy' | 'dazeCharge' | 'daze' | 'overtime' | 'win' | 'respawn' | 'reload'
-  | 'warp' | 'door' | 'levelUp' | 'count';
+  | 'warp' | 'door' | 'levelUp' | 'count' | 'corner' | 'phase' | 'collapseTick';
 
 export interface GameEvent {
   kind: EventKind;

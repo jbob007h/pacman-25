@@ -187,6 +187,9 @@ function playSounds(g: Game, events: GameEvent[], viewer: Player | null) {
       case 'dazeCharge': if (mine) audio.dazeCharge(); else if (e.maze === vm) audio.warn(); break;
       case 'daze': if (mine || e.maze === vm) audio.zap(); break;
       case 'collapseStart': if (e.maze === vm) audio.warn(); break;
+      case 'collapseTick': if (e.maze === vm) audio.collapseTick(e.n ?? 9, false); else if (g.neighborTargets(vm).includes(e.maze!)) audio.collapseTick(e.n ?? 9, true); break;
+      case 'corner': if (mine) audio.corner(e.text === 'phase'); break;
+      case 'phase': if (mine) audio.phase(); break;
       case 'collapse': audio.collapse(); break;
       case 'airdrop': audio.airdrop(); break;
       case 'pickup': if (mine) audio.pickup(); break;
