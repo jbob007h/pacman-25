@@ -7,6 +7,10 @@
 // The left half is generated on a coarse lattice and mirrored. We start with every
 // lattice edge open and randomly remove edges while keeping every junction at
 // degree >= 2 (no dead ends) and the graph connected, then validate the result.
+//
+// To limit places you can get trapped, the maze is treated as 2 rows x 3 columns of
+// sectors, and every pair of neighboring sectors must stay joined by at least
+// SECTOR_PASSAGES corridors (see sectorsOk).
 
 import { MW, MH, DOOR_COLS, SIDE_DOOR_ROW, TUNNEL_ROW } from './config';
 import { Rng } from './rng';
@@ -43,6 +47,102 @@ interface Edge {
 }
 
 const key = (r: number, c: number) => `${r},${c}`;
+
+/** Minimum corridors between each pair of neighboring sectors (2 rows x 3 columns). */
+export const SECTOR_PASSAGES = 1;
+
+/**
+ * Longest allowed escape loop, in tiles: for every corridor, the corridor plus the
+ * shortest other way between its two ends. If a ghost shows up at one end, this is how
+ * far you'd have to run to get around it. Doors count as escape hatches.
+ */
+export const MAX_ESCAPE_LOOP = 30;
+
+// Lattice edges that cross a sector boundary. Columns split at x~13 and x~27 (the right
+// boundary mirrors the left one), rows at y~11. The middle column's top/bottom halves are
+// always joined by the fixed corridor ring around the ghost house (on both sides).
+const CROSS_LEFT_MIDDLE_TOP = [1, 4, 7, 10].map((r) => `${key(r, 12)}>${key(r, 15)}`);
+const CROSS_LEFT_MIDDLE_BOTTOM = [13, 16, 20].map((r) => `${key(r, 12)}>${key(r, 15)}`);
+const CROSS_LEFT_TOP_BOTTOM = [1, 5, 9, 12].map((c) => `${key(10, c)}>${key(13, c)}`);
+
+/**
+ * Builds a checker for the escape-loop limit over the full (mirrored) maze. The graph is
+ * built once per attempt; the checker reads each lattice edge's current `on` flag.
+ * Returns true if every corridor's escape loop is at most maxLoop tiles.
+ */
+function makeLoopChecker(edges: Edge[]): (maxLoop: number) => boolean {
+  const parse = (k: string) => k.split(',').map(Number) as [number, number];
+  const id = new Map<string, number>();
+  const nodeId = (r: number, c: number) => {
+    const k = key(r, c);
+    let v = id.get(k);
+    if (v === undefined) { v = id.size; id.set(k, v); }
+    return v;
+  };
+  const OUT = nodeId(-1, -1);
+  // Graph edges: [a, b, length, owning lattice edge index or -1 if always present]
+  const list: [number, number, number, number][] = [];
+  const checkList: number[] = []; // graph edges whose loops we test (one copy of each mirrored pair)
+  edges.forEach((e, ei) => {
+    const [r1, c1] = parse(e.a);
+    if (e.b === null) {
+      checkList.push(list.length);
+      list.push([nodeId(r1, c1), nodeId(r1, MW - 1 - c1), MW - 1 - 2 * c1, ei]);
+      return;
+    }
+    const [r2, c2] = parse(e.b);
+    const len = Math.abs(r2 - r1) + Math.abs(c2 - c1);
+    checkList.push(list.length); // the mirror copy has the same loop by symmetry
+    list.push([nodeId(r1, c1), nodeId(r2, c2), len, ei]);
+    list.push([nodeId(r1, MW - 1 - c1), nodeId(r2, MW - 1 - c2), len, ei]);
+  });
+  // Doors (top/bottom on both sides, and the side doors) lead out; the tunnel joins its two ends.
+  for (const [r, c] of [[1, DOOR_COLS[0]], [20, DOOR_COLS[0]], [1, MW - 1 - DOOR_COLS[0]], [20, MW - 1 - DOOR_COLS[0]], [SIDE_DOOR_ROW, 1], [SIDE_DOOR_ROW, MW - 2]]) {
+    list.push([nodeId(r, c), OUT, 1, -1]);
+  }
+  list.push([nodeId(TUNNEL_ROW, 1), nodeId(TUNNEL_ROW, MW - 2), 3, -1]);
+  const n = id.size;
+  const adj: [number, number, number][][] = Array.from({ length: n }, () => []);
+  list.forEach(([a, b, len], i) => { adj[a].push([b, len, i]); adj[b].push([a, len, i]); });
+  const dist = new Int32Array(n);
+  const buckets: number[][] = [];
+  const live = (i: number) => list[i][3] < 0 || edges[list[i][3]].on;
+  return (maxLoop: number) => {
+    // Corridor lengths are small integers, so a bucket queue (Dial's algorithm) is fast,
+    // and each search stops as soon as it passes the length budget.
+    for (const skip of checkList) {
+      if (!live(skip)) continue;
+      const [a, b, len] = list[skip];
+      const limit = maxLoop - len;
+      if (limit < 0) return false;
+      dist.fill(0x7fffffff);
+      dist[a] = 0;
+      for (let i = 0; i <= limit; i++) (buckets[i] ??= []).length = 0;
+      buckets[0].push(a);
+      let found = false;
+      for (let d = 0; d <= limit && !found; d++) {
+        for (const u of buckets[d]) {
+          if (dist[u] !== d) continue;
+          if (u === b) { found = true; break; }
+          for (const [v, l, ei] of adj[u]) {
+            const nd = d + l;
+            if (ei === skip || nd >= dist[v] || nd > limit || !live(ei)) continue;
+            dist[v] = nd;
+            buckets[nd].push(v);
+          }
+        }
+      }
+      if (!found) return false;
+    }
+    return true;
+  };
+}
+
+function sectorsOk(edges: Edge[], need: number): boolean {
+  const on = new Set(edges.filter((e) => e.on && e.b !== null).map((e) => `${e.a}>${e.b}`));
+  const count = (list: string[]) => list.reduce((n, k) => n + (on.has(k) ? 1 : 0), 0);
+  return count(CROSS_LEFT_MIDDLE_TOP) >= need && count(CROSS_LEFT_MIDDLE_BOTTOM) >= need && count(CROSS_LEFT_TOP_BOTTOM) >= need;
+}
 const nodeExists = (r: number, c: number) => !(r === 10 && c === 18);
 
 function buildGraph(): { nodes: string[]; edges: Edge[]; external: Map<string, number> } {
@@ -180,17 +280,19 @@ function validate(tiles: Uint8Array, dotCount: number): boolean {
   return count === total;
 }
 
-export function generateMaze(rng: Rng): MazeLayout {
+export function generateMaze(rng: Rng, sectorPassages = SECTOR_PASSAGES, maxLoop = MAX_ESCAPE_LOOP): MazeLayout {
   for (let attempt = 0; attempt < 200; attempt++) {
     const seed = rng.int(2 ** 31);
     const local = new Rng(seed);
     const { nodes, edges, external } = buildGraph();
     const pRemove = local.range(0.42, 0.62);
+    const loopsOk = makeLoopChecker(edges);
     const order = local.shuffle(edges.filter((e) => !e.fixed));
     for (const e of order) {
       if (!local.chance(pRemove)) continue;
       e.on = false;
-      const ok = degree(e.a, edges, external) >= 2 && (e.b === null || degree(e.b, edges, external) >= 2) && connected(nodes, edges);
+      const ok = degree(e.a, edges, external) >= 2 && (e.b === null || degree(e.b, edges, external) >= 2) &&
+        connected(nodes, edges) && sectorsOk(edges, sectorPassages) && loopsOk(maxLoop);
       if (!ok) e.on = true;
     }
     const tiles = carveLayout(edges);

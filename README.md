@@ -81,7 +81,7 @@ committing changes to `src/`.
 | File | What it does |
 | --- | --- |
 | `src/config.ts` | Every tuning number: speeds, timers, levels, power-ups, colors |
-| `src/maze.ts` | Procedural mazes: a mirrored lattice with random edges removed, validated for connectivity, no dead ends and pellet count |
+| `src/maze.ts` | Procedural mazes: a mirrored lattice with random edges removed, validated for connectivity, no dead ends and pellet count. Anti-trap rules: the maze's 2×3 sectors must stay connected to each neighbor, and every corridor must have a way around it of at most 30 tiles (`MAX_ESCAPE_LOOP`) |
 | `src/movement.ts` | Tile movement with buffered turns and the tunnel warp |
 | `src/game.ts` | The simulation: rules, collisions, raiders, fruit, collapse, power-ups. Runs at a fixed 60 Hz with no DOM access |
 | `src/ghosts.ts` | Classic ghost targeting and raider steering |
