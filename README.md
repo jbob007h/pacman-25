@@ -141,8 +141,15 @@ loop), `src/gamepad.ts` (controller input and menu navigation).
 
 ## Deploy to Fly.io
 
-The repo includes a `Dockerfile` and `fly.toml`. Matches live in the server's memory, so
-run a single machine.
+The live server is **https://maze-royale-vkcod.fly.dev**.
+
+On Windows, double-click `deploy.bat` to deploy: it installs `flyctl` if needed, signs
+it in, and runs `fly deploy --ha=false --remote-only` (the build runs on Fly's servers,
+so Docker and Node aren't needed locally). It saves the app name in `.fly-app` and
+reuses it on later runs.
+
+By hand: the repo includes a `Dockerfile` and `fly.toml`. Matches live in the server's
+memory, so run a single machine.
 
 ```sh
 fly auth login
