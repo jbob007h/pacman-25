@@ -55,12 +55,14 @@ export class Game {
       const mx = i % C.GRID, my = Math.floor(i / C.GRID);
       this.mazes.push({
         idx: i, mx, my, ox: mx * C.MW, oy: my * C.MH, layout,
-        pellets: layout.pellets.slice(), dotsLeft: layout.dotCount, level: 1, owner: -1,
+        pellets: new Uint8Array(layout.pellets.length), dotsLeft: 0, level: 1, owner: -1,
         collapsed: false, collapseTimer: 0, frightTimer: 0, frightGen: 0, hitstop: 0, combo: 0,
+        board: 'full', emptyQuadrant: -1, fruitTimer: 0,
         mode: 'scatter', modeTimer: C.SCATTER_TIME, frenzy: 0, frenzyWarn: 0, blackout: 0, blackoutWarn: 0,
         effectBy: -1, fruit: false, raiderCount: 0,
       });
       this.inMaze.push([]);
+      this.fillBoard(this.mazes[i], false);
     }
     const homes = this.rng.shuffle([...Array(C.PLAYERS).keys()]);
     const names = this.rng.shuffle([...C.BOT_NAMES]);
@@ -195,6 +197,33 @@ export class Game {
     }
   }
 
+  /**
+   * Lays out a fresh set of pellets for a maze (match start, and after each fruit).
+   * Usually one random quadrant is left bare; after a board with all four quadrants,
+   * there's a chance of a completely empty board whose fruit shows up almost at once.
+   */
+  private fillBoard(m: MazeState, afterFull: boolean) {
+    let board: MazeState['board'];
+    if (afterFull && this.rng.chance(C.EMPTY_BOARD_AFTER_FULL)) board = 'empty';
+    else board = this.rng.chance(C.EMPTY_QUADRANT_CHANCE) ? 'quadrant' : 'full';
+    m.board = board;
+    m.emptyQuadrant = board === 'quadrant' ? this.rng.int(4) : -1;
+    m.pellets.set(m.layout.pellets);
+    let dots = 0;
+    for (let i = 0; i < m.pellets.length; i++) {
+      if (m.pellets[i] === 0) continue;
+      const lx = i % C.MW, ly = Math.floor(i / C.MW);
+      const quad = (lx < C.MW / 2 ? 0 : 1) + (ly < C.MH / 2 ? 0 : 2);
+      const bare = board === 'empty' || (board === 'quadrant' && quad === m.emptyQuadrant);
+      if (bare && m.pellets[i] === P_DOT) m.pellets[i] = 0; // power pellets always stay
+      if (m.pellets[i] === P_DOT) dots++;
+    }
+    m.dotsLeft = dots;
+    m.fruit = false;
+    m.fruitTimer = board === 'empty' ? C.EMPTY_BOARD_FRUIT_DELAY : 0;
+    this.emit('board', { maze: m.idx, text: board, n: m.emptyQuadrant });
+  }
+
   /** Moves a ghost in a straight line toward (tx, ty) in local maze coords. Returns the distance left over. */
   private glide(g: Ghost, tx: number, ty: number, dist: number): number {
     const m = this.mazes[g.maze];
@@ -307,6 +336,14 @@ export class Game {
     for (const m of this.mazes) {
       if (m.collapsed) continue;
       if (m.hitstop > 0) { m.hitstop = Math.max(0, m.hitstop - dt); continue; }
+      if (m.fruitTimer > 0) {
+        m.fruitTimer -= dt;
+        if (m.fruitTimer <= 0 && !m.fruit && m.dotsLeft <= 0) {
+          m.fruitTimer = 0;
+          m.fruit = true;
+          this.emit('fruitSpawn', { maze: m.idx, x: m.ox + C.FRUIT.x, y: m.oy + C.FRUIT.y, text: `Empty board in ${mazeName(m.idx)} — fruit appeared` }, true);
+        }
+      }
       if (m.collapseTimer > 0) {
         const before = Math.ceil(m.collapseTimer);
         m.collapseTimer -= dt;
@@ -394,7 +431,7 @@ export class Game {
       this.emit('dot', { player: p.id, maze: m.idx, x: Math.round(p.x), y: Math.round(p.y) });
       if (m.dotsLeft <= 0 && !m.fruit) {
         m.fruit = true;
-        this.emit('fruitSpawn', { maze: m.idx, text: `${mazeName(m.idx)} cleared — fruit appeared` }, true);
+        this.emit('fruitSpawn', { maze: m.idx, x: m.ox + C.FRUIT.x, y: m.oy + C.FRUIT.y, text: `${mazeName(m.idx)} cleared — fruit appeared` }, true);
       }
     } else if (pel === P_POWER) {
       m.pellets[i] = 0;
@@ -417,8 +454,7 @@ export class Game {
 
   private eatFruit(p: Player, m: MazeState) {
     m.fruit = false;
-    m.pellets.set(m.layout.pellets);
-    m.dotsLeft = m.layout.dotCount;
+    this.fillBoard(m, m.board === 'full');
     const before = m.level;
     m.level = Math.min(C.MAX_LEVEL, m.level + 1);
     if (m.level !== before) this.emit('levelUp', { maze: m.idx, n: m.level });
@@ -706,6 +742,7 @@ export class Game {
     m.collapsed = true;
     m.collapseTimer = 0;
     m.fruit = false;
+    m.fruitTimer = 0;
     m.pellets.fill(0);
     m.dotsLeft = 0;
     m.frightTimer = 0;

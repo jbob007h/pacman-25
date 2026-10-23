@@ -51,6 +51,11 @@ On touch screens, swipe to move and tap the power-up slot.
   neighboring mazes. Raiders can't be eaten. They spawn away from Pac-Men, can't use
   doors or tunnels, freeze while that maze's power pellet is active, and are all wiped out
   when someone eats that maze's fruit. They dissolve after 15 seconds.
+- **Pellet boards.** Each time a maze fills with pellets (match start and after every
+  fruit), it rolls a layout: usually (80%) one random quadrant has no pellets, otherwise
+  all four do. Right after a board with all four quadrants, there's a 50% chance the next
+  board has no pellets at all, and its fruit appears after 2 seconds. Power pellets always
+  spawn.
 - **Fruit and levels.** Clearing a maze spawns its fruit. Eating the fruit refills the
   maze and raises its level (faster ghosts, shorter fright, new wall colors). Eating a
   rival's fruit also reloads your own home power pellets without leveling your home.

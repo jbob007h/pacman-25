@@ -132,6 +132,17 @@ export class Renderer {
           this.popup(e.x!, e.y!, 'FRUIT!', '#FF8FA0', 28);
           if (e.maze === vm) { this.addShake(6); this.addFlash('#FF8FA0', 0.2); }
           break;
+        case 'board':
+          // Announce the new layout in the maze you're in (not at match start).
+          if (e.maze === vm && game.time > 0.5) {
+            const m = game.mazes[e.maze];
+            if (e.text === 'empty') this.popup(m.ox + C.MW / 2, m.oy + 6, 'EMPTY BOARD', '#FF8FA0', 34, `FRUIT IN ${C.EMPTY_BOARD_FRUIT_DELAY}s`);
+            else if (e.text === 'full') this.popup(m.ox + C.MW / 2, m.oy + 6, 'FULL BOARD', '#FFF3D1', 30);
+          }
+          break;
+        case 'fruitSpawn':
+          if (e.x !== undefined) { this.ring(e.x, e.y!, '#FF4D5E', 0.7, 3, 0.4, 3); this.burst(e.x, e.y!, '#FF8FA0', 14, 5, 0.6); }
+          break;
         case 'levelUp': {
           this.levelFlash.set(e.maze!, 1);
           if (e.maze === vm) {

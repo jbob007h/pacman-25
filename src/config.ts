@@ -73,6 +73,15 @@ export const MAX_GHOSTS_PER_MAZE = 8; // overtime adds ghosts once mazes hit max
 
 export const COLLIDE_DIST = 0.6; // tiles
 
+// Pellet boards. Each time a maze is filled (match start, and after every fruit), it rolls:
+//   - normally: EMPTY_QUADRANT_CHANCE that one random quadrant gets no pellets, otherwise all four do
+//   - right after a board with all four quadrants: EMPTY_BOARD_AFTER_FULL chance of no pellets at
+//     all, with the fruit appearing after EMPTY_BOARD_FRUIT_DELAY (otherwise the normal roll)
+export const EMPTY_QUADRANT_CHANCE = 0.8;
+export const EMPTY_BOARD_AFTER_FULL = 0.5;
+export const EMPTY_BOARD_FRUIT_DELAY = 2;
+// Power pellets always spawn, even in empty quadrants and on empty boards.
+
 // Cornering: a turn queued before reaching a corner cuts it by up to this many tiles,
 // throws sparks, and (if off cooldown) opens a short window to pass through enemies.
 export const CORNER_CUT = 0.35;
