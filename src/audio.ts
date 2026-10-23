@@ -112,12 +112,20 @@ export class Audio {
   zap() { this.hiss(0.3, 0.2, 2000); this.tone(freq(31), 0.25, 'sawtooth', 0.08, 0, freq(7)); }
   collapse() { this.tone(55, 1.2, 'sawtooth', 0.18, 0, 30); this.hiss(1.0, 0.18, 200); }
   airdrop() { this.tone(freq(24), 0.08, 'sine', 0.1); this.tone(freq(31), 0.2, 'sine', 0.1, 0.08); }
+  /** Countdown beeps: 3, 2, 1 low; GO is a bright chord. */
+  count(n: number) {
+    if (n > 0) { this.tone(freq(12), 0.16, 'square', 0.1); return; }
+    [24, 28, 31].forEach((s) => this.tone(freq(s), 0.45, 'square', 0.07));
+    this.tone(70, 0.25, 'sine', 0.4, 0, 35);
+  }
   win() { [12, 16, 19, 24, 28, 31, 36].forEach((s, i) => this.tone(freq(s), 0.2, 'square', 0.08, i * 0.09)); }
   lose() { [12, 11, 9, 7, 0].forEach((s, i) => this.tone(freq(s), 0.25, 'triangle', 0.12, i * 0.16)); }
 
   /** Lookahead music sequencer; call every frame. */
   tick() {
     if (!this.ctx || !this.musicGain || !this.playing) return;
+    // Don't try to catch up on beats missed while the music was stopped.
+    if (this.nextBeat < this.ctx.currentTime - 0.05) this.nextBeat = this.ctx.currentTime + 0.05;
     const spb = 60 / (118 + this.intensity * 6) / 2; // eighth notes
     const bass = [0, 0, 12, 0, 7, 0, 10, 12];
     const prog = [0, 0, -2, -4];

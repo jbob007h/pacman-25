@@ -55,13 +55,14 @@ function startMatch() {
   audio.unlock();
   const name = (nameInput.value.trim().toUpperCase().replace(/[^A-Z0-9 _-]/g, '') || 'ACE').slice(0, 10);
   saveName(name);
-  game = new Game({ seed: (Date.now() ^ (Math.random() * 1e9)) >>> 0, human: true, humanName: name });
+  game = new Game({ seed: (Date.now() ^ (Math.random() * 1e9)) >>> 0, human: true, humanName: name, countdown: C.COUNTDOWN });
   acc = 0;
   spectateId = -1;
   endShownAt = -1;
   humanOutHandled = false;
   mode = 'play';
-  audio.playing = true;
+  audio.playing = false; // music kicks in on GO
+  audio.count(C.COUNTDOWN);
   show(null);
   nameInput.blur();
 }
@@ -173,6 +174,7 @@ function playSounds(g: Game, events: GameEvent[], viewer: Player | null) {
   for (const e of events) {
     const mine = e.player === viewer.id;
     switch (e.kind) {
+      case 'count': audio.count(e.n ?? 0); if (e.n === 0) audio.playing = true; break;
       case 'dot': if (mine) audio.dot(); break;
       case 'power': if (mine || e.maze === vm) audio.power(); break;
       case 'ghost': if (mine || e.maze === vm) { audio.ghost(e.n ?? 1); if (mine && e.target?.length) audio.sent(); } break;

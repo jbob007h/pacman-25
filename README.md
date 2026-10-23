@@ -25,6 +25,8 @@ On touch screens, swipe to move and tap the power-up slot.
 
 ## Rules
 
+- **Start.** Every match opens with a 3-2-1 countdown. You can press a direction during
+  it and you'll set off that way on GO.
 - **Lives and homes.** You have 3 lives and no extra lives. You respawn in your home maze,
   and its ghosts go back to their house. When a player loses their last life, their home
   maze flashes for 10 seconds and then collapses: its doors seal, and anyone still inside
@@ -38,7 +40,7 @@ On touch screens, swipe to move and tap the power-up slot.
   directly, pink aims ahead of you, cyan flanks using the red ghost's position, and
   orange chases from afar but retreats when close. They start slower than you, wait in the house for
   3–15 seconds at the start (5 seconds after being eaten), and crawl out slowly before
-  speeding up. Power pellets frighten every ghost in that maze for 5–7 seconds, and
+  speeding up. Power pellets turn every ghost in that maze around and frighten it for 5–7 seconds, and
   eating a ghost freezes that whole maze for a split second.
 - **Raiders.** Eating a ghost outside your home maze sends one raider to each of the four
   neighboring mazes. Raiders can't be eaten. They spawn away from Pac-Men, can't use

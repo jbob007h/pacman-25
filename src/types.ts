@@ -98,7 +98,7 @@ export interface Airdrop {
 export type EventKind =
   | 'dot' | 'power' | 'ghost' | 'death' | 'out' | 'collapseStart' | 'collapse' | 'fruitSpawn' | 'fruit'
   | 'raiders' | 'airdrop' | 'pickup' | 'blackout' | 'frenzy' | 'dazeCharge' | 'daze' | 'overtime' | 'win' | 'respawn' | 'reload'
-  | 'warp' | 'door' | 'levelUp';
+  | 'warp' | 'door' | 'levelUp' | 'count';
 
 export interface GameEvent {
   kind: EventKind;

@@ -57,6 +57,7 @@ export class Renderer {
   private mazeCard: { title: string; sub: string; color: string; life: number } | null = null;
   private stars: Star[] = [];
   private shake = 0;
+  private goTimer = 0;
   private flash = { color: '#FFFFFF', alpha: 0 };
   private nearMiss = 0;
   private frameDt = 0;
@@ -153,6 +154,9 @@ export class Renderer {
             const p = game.players[e.player!];
             this.ring(p.x, p.y, '#7DE3FF', 0.7, 0.5, 22, 5);
           }
+          break;
+        case 'count':
+          if (e.n === 0) { this.goTimer = 0.8; this.addFlash('#FFD84A', 0.25); this.addShake(6); }
           break;
         case 'collapseStart':
           if (e.maze === vm) this.addShake(4);
@@ -370,6 +374,7 @@ export class Renderer {
     }
     this.drawBlackout(game, viewer);
     this.drawMazeCard(dt);
+    this.drawCountdown(game, viewer, dt);
     if (this.flash.alpha > 0.005) {
       ctx.globalAlpha = this.flash.alpha;
       ctx.fillStyle = this.flash.color;
@@ -1127,6 +1132,66 @@ export class Renderer {
       }
       ctx.stroke();
     }
+    ctx.globalAlpha = 1;
+  }
+
+  /** "3, 2, 1, GO!" over the start of a match, with a ring showing where you are. */
+  private drawCountdown(game: Game, viewer: Player | null, dt: number) {
+    const ctx = this.ctx;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    if (game.countdown > 0) {
+      const n = Math.ceil(game.countdown);
+      const frac = n - game.countdown; // 0 -> 1 through each second
+      const ease = 1 - Math.pow(1 - Math.min(1, frac * 4), 3);
+      const scale = 1.7 - 0.7 * ease;
+      // dim the world a little so the number reads
+      ctx.fillStyle = 'rgba(3,4,9,0.35)';
+      ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+      if (viewer) {
+        const x = this.sx(viewer.x), y = this.sy(viewer.y);
+        const r = 34 + 10 * Math.sin(this.time * 6);
+        ctx.strokeStyle = '#FFD84A';
+        ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.stroke();
+        ctx.font = '700 15px "Chakra Petch", sans-serif';
+        ctx.fillStyle = '#FFD84A';
+        ctx.fillText(`YOU · HOME ${mazeName(viewer.home)}`, x, y + r + 18);
+      }
+      ctx.save();
+      ctx.translate(VIEW_W / 2, 270);
+      ctx.scale(scale, scale);
+      ctx.globalAlpha = frac > 0.75 ? 1 - (frac - 0.75) / 0.25 * 0.6 : 1;
+      ctx.font = '800 150px "Orbitron", sans-serif';
+      ctx.lineWidth = 10;
+      ctx.strokeStyle = 'rgba(5,6,11,0.85)';
+      ctx.strokeText(String(n), 0, 0);
+      ctx.shadowColor = '#FFD84A';
+      ctx.shadowBlur = 30;
+      ctx.fillStyle = '#FFD84A';
+      ctx.fillText(String(n), 0, 0);
+      ctx.restore();
+      ctx.font = '700 18px "Chakra Petch", sans-serif';
+      ctx.fillStyle = '#E9EDFF';
+      ctx.fillText('GET READY · LAST ONE STANDING WINS', VIEW_W / 2, 375);
+    } else if (this.goTimer > 0) {
+      this.goTimer = Math.max(0, this.goTimer - dt);
+      const t = 1 - this.goTimer / 0.8;
+      ctx.save();
+      ctx.translate(VIEW_W / 2, 270);
+      ctx.scale(1 + t * 0.8, 1 + t * 0.8);
+      ctx.globalAlpha = 1 - t;
+      ctx.font = '800 150px "Orbitron", sans-serif';
+      ctx.lineWidth = 10;
+      ctx.strokeStyle = 'rgba(5,6,11,0.85)';
+      ctx.strokeText('GO!', 0, 0);
+      ctx.shadowColor = '#3CF29A';
+      ctx.shadowBlur = 30;
+      ctx.fillStyle = '#3CF29A';
+      ctx.fillText('GO!', 0, 0);
+      ctx.restore();
+    }
+    ctx.textBaseline = 'alphabetic';
     ctx.globalAlpha = 1;
   }
 

@@ -16,6 +16,7 @@ export interface GameOptions {
   seed: number;
   human: boolean;
   humanName?: string;
+  countdown?: number; // seconds of "3, 2, 1, GO" before play starts
 }
 
 export class Game {
@@ -29,6 +30,8 @@ export class Game {
   events: GameEvent[] = []; // drained by the renderer/audio each frame
   feed: GameEvent[] = []; // recent notable events for the HUD
   time = 0;
+  /** Seconds left in the pre-match countdown; nothing moves until it reaches 0. */
+  countdown = 0;
   over = false;
   winner = -1;
   humanId = -1;
@@ -45,6 +48,7 @@ export class Game {
 
   constructor(opts: GameOptions) {
     this.seed = opts.seed;
+    this.countdown = opts.countdown ?? 0;
     this.rng = new Rng(opts.seed);
     for (let i = 0; i < C.GRID * C.GRID; i++) {
       const layout = generateMaze(this.rng);
@@ -178,6 +182,19 @@ export class Game {
     }
   }
 
+  /**
+   * Turns every roaming ghost in a maze around on the spot (power pellet, mode switch).
+   * The queued turn has to flip too, or the movement code reads it as a request to
+   * reverse back and the turnaround is undone on the next frame.
+   */
+  private reverseGhosts(maze: number) {
+    for (const g of this.ghosts) {
+      if (g.maze !== maze || g.state !== 'active' || g.dir < 0) continue;
+      g.dir = opposite(g.dir);
+      g.next = g.dir;
+    }
+  }
+
   /** Moves a ghost in a straight line toward (tx, ty) in local maze coords. Returns the distance left over. */
   private glide(g: Ghost, tx: number, ty: number, dist: number): number {
     const m = this.mazes[g.maze];
@@ -261,6 +278,13 @@ export class Game {
 
   step(dt: number) {
     if (this.over) return;
+    if (this.countdown > 0) {
+      const before = Math.ceil(this.countdown);
+      this.countdown = Math.max(0, this.countdown - dt);
+      const after = Math.ceil(this.countdown);
+      if (after !== before) this.emit('count', { n: after });
+      return;
+    }
     this.time += dt;
 
     for (const list of this.inMaze) list.length = 0;
@@ -299,7 +323,7 @@ export class Game {
         if (m.modeTimer <= 0) {
           m.mode = m.mode === 'scatter' ? 'chase' : 'scatter';
           m.modeTimer = m.mode === 'scatter' ? C.SCATTER_TIME : C.CHASE_TIME;
-          for (const g of this.ghosts) if (g.maze === m.idx && g.state === 'active') g.dir = opposite(g.dir);
+          this.reverseGhosts(m.idx);
         }
       }
       if (m.blackoutWarn > 0) { m.blackoutWarn -= dt; if (m.blackoutWarn <= 0) { m.blackoutWarn = 0; m.blackout = C.BLACKOUT_TIME; } }
@@ -370,7 +394,7 @@ export class Game {
       m.frightTimer = C.FRIGHT_TIME[m.level];
       m.frightGen++;
       m.combo = 0;
-      for (const g of this.ghosts) if (g.maze === m.idx && g.state === 'active') g.dir = opposite(g.dir);
+      this.reverseGhosts(m.idx);
       this.emit('power', { player: p.id, maze: m.idx, x: Math.round(p.x), y: Math.round(p.y) });
     }
     if (m.fruit && dist2(p.x, p.y, m.ox + C.FRUIT.x, m.oy + C.FRUIT.y) < 0.8 * 0.8) this.eatFruit(p, m);

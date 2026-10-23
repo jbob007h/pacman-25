@@ -17,6 +17,7 @@ export const HOUSE_EXIT = { x: 19, y: 7 }; // tile ghosts step out to
 export const HOUSE_CENTER = { x: 19.5, y: 10 };
 
 export const TICK = 1 / 60;
+export const COUNTDOWN = 3; // seconds of 3-2-1 before a match starts
 
 // Speeds in tiles/second.
 export const PAC_SPEED_BASE = 10;
