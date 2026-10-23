@@ -27,9 +27,13 @@ export interface MazeState {
   effectBy: number; // player id who cast the latest blackout/frenzy here
   fruit: boolean;
   raiderCount: number;
+  hitstop: number; // >0: everything in this maze is paused (a ghost was just eaten)
+  combo: number; // ghosts eaten during the current power pellet
 }
 
-export type GhostState = 'house' | 'active' | 'eyes' | 'gone';
+// house: waiting; leaving: crawling out through the gate; active: in the maze;
+// eyes: eaten, heading home; entering: eyes sinking back into the house.
+export type GhostState = 'house' | 'leaving' | 'active' | 'eyes' | 'entering' | 'gone';
 
 export interface Ghost extends Mover {
   id: number;
@@ -38,6 +42,7 @@ export interface Ghost extends Mover {
   state: GhostState;
   timer: number;
   eatenGen: number;
+  emerge: number; // seconds left of the slow start after leaving the house
 }
 
 export interface Raider extends Mover {
@@ -92,7 +97,8 @@ export interface Airdrop {
 
 export type EventKind =
   | 'dot' | 'power' | 'ghost' | 'death' | 'out' | 'collapseStart' | 'collapse' | 'fruitSpawn' | 'fruit'
-  | 'raiders' | 'airdrop' | 'pickup' | 'blackout' | 'frenzy' | 'dazeCharge' | 'daze' | 'overtime' | 'win' | 'respawn' | 'reload';
+  | 'raiders' | 'airdrop' | 'pickup' | 'blackout' | 'frenzy' | 'dazeCharge' | 'daze' | 'overtime' | 'win' | 'respawn' | 'reload'
+  | 'warp' | 'door' | 'levelUp';
 
 export interface GameEvent {
   kind: EventKind;
@@ -104,4 +110,7 @@ export interface GameEvent {
   y?: number;
   player?: number;
   target?: number[];
+  n?: number; // e.g. ghost combo count, new level
+  x2?: number; // second position (warp destination)
+  y2?: number;
 }

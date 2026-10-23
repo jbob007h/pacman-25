@@ -72,9 +72,12 @@ function gatherThreats(game: Game, p: Player, radius: number, blind: boolean): T
     const m = game.mazes[g.maze];
     // Assume ghosts are at least as fast as us: being optimistic here gets bots killed.
     const step = Math.min(UNIT, Math.round(UNIT / game.ghostChaseRatio(g)));
-    if (g.state === 'house') {
+    if (g.state === 'house' || g.state === 'leaving') {
+      // Treat it as appearing at the exit once it has crawled out.
       const ex = m.ox + C.HOUSE_EXIT.x, ey = m.oy + C.HOUSE_EXIT.y;
-      if (g.timer < 2 && near(ex, ey)) out.push({ x: ex, y: ey, delay: units(Math.max(0, g.timer), g.maze), step });
+      const crawl = (Math.abs(g.x - (m.ox + C.HOUSE_CENTER.x)) + Math.abs(g.y - ey) + 0.5) / (pac(g.maze) * C.GHOST_LEAVE_FACTOR);
+      const wait = (g.state === 'house' ? Math.max(0, g.timer) : 0) + crawl;
+      if (wait < 3 && near(ex, ey)) out.push({ x: ex, y: ey, delay: units(wait, g.maze), step });
       continue;
     }
     if (g.state !== 'active' || !near(g.x, g.y)) continue;

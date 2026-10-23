@@ -175,7 +175,10 @@ function playSounds(g: Game, events: GameEvent[], viewer: Player | null) {
     switch (e.kind) {
       case 'dot': if (mine) audio.dot(); break;
       case 'power': if (mine || e.maze === vm) audio.power(); break;
-      case 'ghost': if (mine) { audio.ghost(); if (e.target?.length) audio.sent(); } break;
+      case 'ghost': if (mine || e.maze === vm) { audio.ghost(e.n ?? 1); if (mine && e.target?.length) audio.sent(); } break;
+      case 'warp': if (mine) audio.warp(); break;
+      case 'door': if (mine) audio.door(); break;
+      case 'levelUp': if (e.maze === vm) audio.levelUp(); break;
       case 'death': if (mine) audio.death(); break;
       case 'raiders': if (e.target?.includes(vm)) audio.raiders(); break;
       case 'blackout': case 'frenzy': if (e.target?.includes(vm)) audio.warn(); break;

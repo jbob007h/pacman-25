@@ -21,7 +21,10 @@ export const TICK = 1 / 60;
 // Speeds in tiles/second.
 export const PAC_SPEED_BASE = 10;
 export const PAC_SPEED_PER_LEVEL = 0.75;
-export const GHOST_SPEED_FACTOR = [0, 0.82, 0.86, 0.9, 0.95, 1.0]; // by maze level
+export const GHOST_SPEED_FACTOR = [0, 0.7, 0.76, 0.83, 0.9, 0.97]; // by maze level
+export const GHOST_LEAVE_FACTOR = 0.3; // crawling out of the house, through the gate
+export const GHOST_EMERGE_FACTOR = 0.55; // just after stepping out
+export const GHOST_EMERGE_TIME = 1.2; // seconds before an emerged ghost reaches full speed
 export const GHOST_FRIGHT_FACTOR = 0.55;
 export const GHOST_TUNNEL_FACTOR = 0.5;
 export const GHOST_EYES_FACTOR = 2.0;
@@ -31,12 +34,13 @@ export const ELROY_PELLETS = [0, 20, 30, 40, 50, 60];
 export const RAIDER_SPEED_FACTOR = 0.72; // relative to level-1 Pac-Man speed
 
 // Durations in seconds.
-export const FRIGHT_TIME = [0, 4, 3.6, 3.2, 2.8, 2.4];
+export const FRIGHT_TIME = [0, 7, 6.5, 6, 5.5, 5];
 export const SCATTER_TIME = 5;
 export const CHASE_TIME = 20;
-export const GHOST_RELEASE = [0, 1.5, 4, 7];
+export const GHOST_RELEASE = [3, 7, 11, 15]; // by ghost kind, at match start and after resets
 export const RESPAWN_RELEASE_DELAY = 2.5; // extra house time after the owner respawns
-export const EATEN_REENTER = 1;
+export const EATEN_REENTER = 5; // time an eaten ghost waits in the house before leaving again
+export const HITSTOP = 0.4; // everything in a maze pauses this long when a ghost is eaten
 export const DEATH_TIME = 1.5;
 export const RESPAWN_INVULN = 2;
 export const RAIDER_LIFE = 15;

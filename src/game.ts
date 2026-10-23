@@ -4,7 +4,7 @@
 
 import * as C from './config';
 import { generateMaze, isWalkableCode, P_DOT, P_POWER, T_OPEN, T_WALL } from './maze';
-import { DX, DY, LEFT, RIGHT, dist2, move, opposite, wrapX, wrapY } from './movement';
+import { DX, DY, LEFT, RIGHT, dist2, move, opposite, wrapDelta, wrapX, wrapY } from './movement';
 import { Rng } from './rng';
 import type { Airdrop, EventKind, GameEvent, Ghost, MazeState, Player, PowerKind, Raider } from './types';
 import { chooseGhostDir, chooseRaiderDir } from './ghosts';
@@ -52,7 +52,7 @@ export class Game {
       this.mazes.push({
         idx: i, mx, my, ox: mx * C.MW, oy: my * C.MH, layout,
         pellets: layout.pellets.slice(), dotsLeft: layout.dotCount, level: 1, owner: -1,
-        collapsed: false, collapseTimer: 0, frightTimer: 0, frightGen: 0,
+        collapsed: false, collapseTimer: 0, frightTimer: 0, frightGen: 0, hitstop: 0, combo: 0,
         mode: 'scatter', modeTimer: C.SCATTER_TIME, frenzy: 0, frenzyWarn: 0, blackout: 0, blackoutWarn: 0,
         effectBy: -1, fruit: false, raiderCount: 0,
       });
@@ -79,7 +79,7 @@ export class Game {
     }
     for (const m of this.mazes) {
       for (let k = 0; k < 4; k++) {
-        const g: Ghost = { id: this.nextId++, maze: m.idx, kind: k, x: 0, y: 0, dir: LEFT, next: -1, state: 'house', timer: 0, eatenGen: -1 };
+        const g: Ghost = { id: this.nextId++, maze: m.idx, kind: k, x: 0, y: 0, dir: LEFT, next: -1, state: 'house', timer: 0, eatenGen: -1, emerge: 0 };
         this.ghosts.push(g);
       }
       this.resetGhosts(m.idx, false);
@@ -164,7 +164,7 @@ export class Game {
 
   private houseSlot(g: Ghost) {
     const m = this.mazes[g.maze];
-    g.x = m.ox + 17.4 + g.kind * 1.4;
+    g.x = m.ox + 17.4 + (g.kind % 4) * 1.4;
     g.y = m.oy + C.HOUSE_CENTER.y;
   }
 
@@ -178,13 +178,55 @@ export class Game {
     }
   }
 
-  private releaseGhost(g: Ghost) {
+  /** Moves a ghost in a straight line toward (tx, ty) in local maze coords. Returns the distance left over. */
+  private glide(g: Ghost, tx: number, ty: number, dist: number): number {
     const m = this.mazes[g.maze];
-    g.state = 'active';
-    g.x = m.ox + C.HOUSE_EXIT.x;
-    g.y = m.oy + C.HOUSE_EXIT.y;
-    g.dir = g.kind % 2 === 0 ? LEFT : RIGHT;
-    g.next = -1;
+    const dx = m.ox + tx - g.x, dy = m.oy + ty - g.y;
+    const d = Math.abs(dx) + Math.abs(dy);
+    if (d <= dist) { g.x = m.ox + tx; g.y = m.oy + ty; return dist - d; }
+    if (Math.abs(dx) > 1e-6) g.x += Math.sign(dx) * Math.min(dist, Math.abs(dx));
+    else g.y += Math.sign(dy) * dist;
+    return 0;
+  }
+
+  /** Ghost crawling out of the house: to the middle, up through the gate, then a half step onto the exit tile. */
+  private updateLeaving(g: Ghost, dt: number) {
+    const m = this.mazes[g.maze];
+    const exitX = g.kind % 2 === 0 ? C.HOUSE_EXIT.x : C.HOUSE_EXIT.x + 1;
+    let dist = this.pacSpeed(m.level) * C.GHOST_LEAVE_FACTOR * dt;
+    const lx = g.x - m.ox, ly = g.y - m.oy;
+    if (ly > C.HOUSE_EXIT.y + 1e-6) {
+      if (Math.abs(lx - C.HOUSE_CENTER.x) > 1e-6) dist = this.glide(g, C.HOUSE_CENTER.x, ly, dist);
+      if (dist > 0) dist = this.glide(g, C.HOUSE_CENTER.x, C.HOUSE_EXIT.y, dist);
+    }
+    if (dist <= 0) return;
+    // Wait at the gate rather than stepping out onto a Pac-Man.
+    const ex = m.ox + exitX, ey = m.oy + C.HOUSE_EXIT.y;
+    if (this.inMaze[g.maze].some((p) => dist2(p.x, p.y, ex, ey) < 1.5 * 1.5)) return;
+    dist = this.glide(g, exitX, C.HOUSE_EXIT.y, dist);
+    if (Math.abs(g.x - ex) < 1e-6) {
+      g.state = 'active';
+      g.dir = g.kind % 2 === 0 ? LEFT : RIGHT;
+      g.next = -1;
+      g.emerge = C.GHOST_EMERGE_TIME;
+    }
+  }
+
+  /** Eaten ghost's eyes sinking back into the house. */
+  private updateEntering(g: Ghost, dt: number) {
+    const m = this.mazes[g.maze];
+    let dist = this.pacSpeed(m.level) * C.GHOST_EYES_FACTOR * 0.5 * dt;
+    if (g.y - m.oy < C.HOUSE_CENTER.y - 1e-6) {
+      dist = this.glide(g, C.HOUSE_CENTER.x, g.y - m.oy, dist);
+      if (dist > 0) dist = this.glide(g, C.HOUSE_CENTER.x, C.HOUSE_CENTER.y, dist);
+    }
+    if (dist <= 0) return;
+    const slotX = 17.4 + g.kind % 4 * 1.4;
+    dist = this.glide(g, slotX, C.HOUSE_CENTER.y, dist);
+    if (Math.abs(g.x - (m.ox + slotX)) < 1e-6) {
+      g.state = 'house';
+      g.timer = C.EATEN_REENTER;
+    }
   }
 
   // ---------- player actions ----------
@@ -240,6 +282,7 @@ export class Game {
   private updateMazes(dt: number) {
     for (const m of this.mazes) {
       if (m.collapsed) continue;
+      if (m.hitstop > 0) { m.hitstop = Math.max(0, m.hitstop - dt); continue; }
       if (m.collapseTimer > 0) {
         m.collapseTimer -= dt;
         if (m.collapseTimer <= 0) this.collapse(m);
@@ -274,6 +317,7 @@ export class Game {
         if (p.timer <= 0) this.afterDeath(p);
         continue;
       }
+      if (this.mazes[p.maze].hitstop > 0) continue;
       if (p.invuln > 0) p.invuln = Math.max(0, p.invuln - dt);
       if (p.dazeCharge > 0) {
         p.dazeCharge -= dt;
@@ -285,6 +329,7 @@ export class Game {
         continue;
       }
       const level = this.mazes[p.maze].level;
+      const ox = p.x, oy = p.y, oMaze = p.maze;
       move(p, this.pacSpeed(level) * dt, {
         canEnter: this.pacCanEnter,
         tunnel: true,
@@ -292,6 +337,11 @@ export class Game {
       });
       if (p.dir >= 0) p.face = p.dir;
       p.maze = this.mazeAt(p.x, p.y);
+      if (Math.abs(wrapDelta(p.x - ox, C.WORLD_W)) > 2) {
+        this.emit('warp', { player: p.id, maze: p.maze, x: Math.round(ox), y: Math.round(oy), x2: p.x, y2: p.y });
+      } else if (p.maze !== oMaze) {
+        this.emit('door', { player: p.id, maze: p.maze, n: oMaze, x: p.x, y: p.y });
+      }
       this.eatAt(p);
       if (p.slot === null && p.charge >= C.CHARGE_FULL) {
         p.slot = this.rng.weighted<PowerKind>(['blackout', 'frenzy', 'daze'], [40, 40, 20]);
@@ -319,6 +369,7 @@ export class Game {
       m.pellets[i] = 0;
       m.frightTimer = C.FRIGHT_TIME[m.level];
       m.frightGen++;
+      m.combo = 0;
       for (const g of this.ghosts) if (g.maze === m.idx && g.state === 'active') g.dir = opposite(g.dir);
       this.emit('power', { player: p.id, maze: m.idx, x: Math.round(p.x), y: Math.round(p.y) });
     }
@@ -337,7 +388,9 @@ export class Game {
     m.fruit = false;
     m.pellets.set(m.layout.pellets);
     m.dotsLeft = m.layout.dotCount;
+    const before = m.level;
     m.level = Math.min(C.MAX_LEVEL, m.level + 1);
+    if (m.level !== before) this.emit('levelUp', { maze: m.idx, n: m.level });
     p.stats.fruits++;
     for (const r of this.raiders) if (r.maze === m.idx) r.dead = true;
     let text = `${p.name} ate the fruit in ${mazeName(m.idx)} — Lv ${m.level}`;
@@ -383,6 +436,10 @@ export class Game {
       if (m.frenzy > 0) s *= C.FRENZY_FACTOR;
       if (g.kind === 0 && m.dotsLeft <= C.ELROY_PELLETS[m.level]) s *= C.ELROY_FACTOR;
     }
+    if (g.emerge > 0) {
+      const t = 1 - g.emerge / C.GHOST_EMERGE_TIME;
+      s *= C.GHOST_EMERGE_FACTOR + (1 - C.GHOST_EMERGE_FACTOR) * t;
+    }
     const ly = Math.round(g.y) - m.oy, lx = Math.round(g.x) - m.ox;
     if (ly === C.TUNNEL_ROW && (lx <= 2 || lx >= C.MW - 3)) s *= C.GHOST_TUNNEL_FACTOR;
     return s;
@@ -392,25 +449,24 @@ export class Game {
     for (const g of this.ghosts) {
       if (g.state === 'gone') continue;
       const m = this.mazes[g.maze];
+      if (m.hitstop > 0) continue;
       if (g.state === 'house') {
         g.timer -= dt;
-        if (g.timer <= 0) {
-          // Don't pop out on top of a Pac-Man standing at the exit.
-          const ex = m.ox + C.HOUSE_EXIT.x, ey = m.oy + C.HOUSE_EXIT.y;
-          if (this.inMaze[g.maze].some((p) => dist2(p.x, p.y, ex, ey) < 2.5 * 2.5)) g.timer = 0.25;
-          else this.releaseGhost(g);
-        }
+        if (g.timer <= 0) g.state = 'leaving';
         continue;
       }
+      if (g.state === 'leaving') { this.updateLeaving(g, dt); continue; }
+      if (g.state === 'entering') { this.updateEntering(g, dt); continue; }
+      if (g.emerge > 0) g.emerge = Math.max(0, g.emerge - dt);
       const canEnter = (tx: number, ty: number) => this.mazeAt(tx, ty) === g.maze && isWalkableCode(this.tileCode(tx, ty));
       move(g, this.ghostSpeed(g) * dt, {
         canEnter,
         tunnel: true,
         atCenter: () => {
           if (g.state === 'eyes' && Math.round(g.x) === m.ox + C.HOUSE_EXIT.x && Math.round(g.y) === m.oy + C.HOUSE_EXIT.y) {
-            g.state = 'house';
-            g.timer = C.EATEN_REENTER;
-            this.houseSlot(g);
+            g.state = 'entering';
+            g.dir = -1;
+            g.next = -1;
             return;
           }
           chooseGhostDir(this, g, canEnter);
@@ -423,6 +479,7 @@ export class Game {
     for (const r of this.raiders) {
       if (r.dead) continue;
       const m = this.mazes[r.maze];
+      if (m.hitstop > 0) continue;
       r.life -= dt;
       if (r.life <= 0 || m.collapsed) { r.dead = true; continue; }
       if (r.materialize > 0) { r.materialize -= dt; continue; }
@@ -444,7 +501,7 @@ export class Game {
   private collide() {
     const R2 = C.COLLIDE_DIST * C.COLLIDE_DIST;
     for (const p of this.players) {
-      if (p.state !== 'alive') continue;
+      if (p.state !== 'alive' || this.mazes[p.maze].hitstop > 0) continue;
       for (const g of this.ghosts) {
         if (g.maze !== p.maze || g.state !== 'active') continue;
         if (dist2(p.x, p.y, g.x, g.y) > R2) continue;
@@ -467,9 +524,11 @@ export class Game {
     g.state = 'eyes';
     g.eatenGen = m.frightGen;
     p.stats.ghosts++;
+    m.combo++;
+    m.hitstop = C.HITSTOP;
     let targets: number[] = [];
     if (p.maze !== p.home) targets = this.sendRaiders(p.maze, p);
-    this.emit('ghost', { player: p.id, maze: m.idx, x: g.x, y: g.y, color: p.color, target: targets });
+    this.emit('ghost', { player: p.id, maze: m.idx, x: g.x, y: g.y, color: p.color, target: targets, n: m.combo });
     if (targets.length) {
       this.emit('raiders', { player: p.id, color: p.color, target: targets, text: `${p.name} sent raiders to ${targets.map(mazeName).join(' ')}` }, true);
     }
@@ -613,11 +672,11 @@ export class Game {
         let added = false;
         for (const m of this.mazes) {
           if (m.collapsed) continue;
-          if (m.level < C.MAX_LEVEL) { m.level++; continue; }
+          if (m.level < C.MAX_LEVEL) { m.level++; this.emit('levelUp', { maze: m.idx, n: m.level }); continue; }
           // Already at max level: add another ghost instead, so stalemates can't last.
           const count = this.ghosts.filter((g) => g.maze === m.idx && g.state !== 'gone').length;
           if (count >= C.MAX_GHOSTS_PER_MAZE) continue;
-          const g: Ghost = { id: this.nextId++, maze: m.idx, kind: count % 4, x: 0, y: 0, dir: LEFT, next: -1, state: 'house', timer: 1, eatenGen: m.frightGen };
+          const g: Ghost = { id: this.nextId++, maze: m.idx, kind: count % 4, x: 0, y: 0, dir: LEFT, next: -1, state: 'house', timer: 1, eatenGen: m.frightGen, emerge: 0 };
           this.houseSlot(g);
           this.ghosts.push(g);
           added = true;

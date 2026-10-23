@@ -91,7 +91,17 @@ export class Audio {
     this.tone(freq(semi), 0.07, 'square', 0.05);
   }
   power() { this.tone(freq(12), 0.35, 'sawtooth', 0.12, 0, freq(24)); this.tone(freq(19), 0.3, 'square', 0.06, 0.05); }
-  ghost() { [24, 28, 31, 36].forEach((s, i) => this.tone(freq(s), 0.08, 'square', 0.09, i * 0.04)); }
+  /** Ghost eaten; each ghost in a combo climbs higher. */
+  ghost(combo = 1) {
+    const up = (Math.min(combo, 6) - 1) * 3;
+    this.tone(90, 0.18, 'sine', 0.4, 0, 40); // thump under the hit-pause
+    [24, 28, 31, 36].forEach((s, i) => this.tone(freq(s + up), 0.08, 'square', 0.09, 0.02 + i * 0.04));
+  }
+  /** Side-tunnel warp: a rising zip. */
+  warp() { this.tone(freq(0), 0.22, 'sine', 0.12, 0, freq(31)); this.hiss(0.18, 0.08, 3000); }
+  /** Walking through a door into another maze. */
+  door() { this.hiss(0.22, 0.1, 900); this.tone(freq(7), 0.12, 'triangle', 0.06, 0.02, freq(14)); }
+  levelUp() { [12, 19, 24, 31, 36].forEach((s, i) => this.tone(freq(s), 0.12, 'sawtooth', 0.06, i * 0.05)); }
   death() { this.tone(freq(12), 0.9, 'sawtooth', 0.15, 0, freq(-12)); this.hiss(0.4, 0.15, 800, 0.1); }
   raiders() { this.tone(freq(7), 0.12, 'sawtooth', 0.1); this.tone(freq(6), 0.12, 'sawtooth', 0.1, 0.14); this.tone(freq(7), 0.12, 'sawtooth', 0.1, 0.28); }
   sent() { this.tone(freq(19), 0.1, 'triangle', 0.12); this.tone(freq(24), 0.16, 'triangle', 0.12, 0.08); }

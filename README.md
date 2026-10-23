@@ -29,10 +29,15 @@ On touch screens, swipe to move and tap the power-up slot.
   and its ghosts go back to their house. When a player loses their last life, their home
   maze flashes for 10 seconds and then collapses: its doors seal, and anyone still inside
   loses a life.
-- **The world.** Each maze has doors on all four edges leading to the neighboring maze.
-  The grid wraps around. The side tunnels warp to the other side of the same maze.
+- **The world.** Each maze has doors on all four edges leading to the neighboring maze,
+  drawn as lit gates in the neighbor's colors with its name beside them. The grid wraps
+  around. The side tunnels are violet warp portals that send you to the other side of the
+  same maze.
 - **Ghosts** use the classic chase/scatter targeting against the nearest Pac-Man in
-  their own maze, and never leave it. Power pellets frighten every ghost in that maze.
+  their own maze, and never leave it. They start slower than you, wait in the house for
+  3–15 seconds at the start (5 seconds after being eaten), and crawl out slowly before
+  speeding up. Power pellets frighten every ghost in that maze for 5–7 seconds, and
+  eating a ghost freezes that whole maze for a split second.
 - **Raiders.** Eating a ghost outside your home maze sends one raider to each of the four
   neighboring mazes. Raiders can't be eaten. They spawn away from Pac-Men, can't use
   doors or tunnels, freeze while that maze's power pellet is active, and are all wiped out

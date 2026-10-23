@@ -1,13 +1,17 @@
 // Canvas renderer. Draws a fixed 1600x900 logical screen: the maze the viewed
 // player is in fills the middle, with strips of the 8 surrounding mazes around it.
 // The camera snaps (with a short slide) to whichever maze the player is in.
+//
+// Doors to neighboring mazes are drawn as "gates" in the neighbor's colors with
+// chevrons streaming outward; side tunnels (which warp within the same maze) are
+// drawn as violet vortex portals, so the two never read as the same thing.
 
 import * as C from './config';
 import { P_DOT, P_POWER } from './maze';
 import { DX, DY, wrapDelta } from './movement';
 import { wallSegments, type Segment } from './walls';
-import type { Game } from './game';
-import type { GameEvent, Player, Raider } from './types';
+import { mazeName, type Game } from './game';
+import type { GameEvent, MazeState, Player, Raider } from './types';
 
 export const VIEW_W = 1600;
 export const VIEW_H = 900;
@@ -18,10 +22,15 @@ const PAD = 24;
 const MAZE_PX_W = C.MW * TS;
 const MAZE_PX_H = C.MH * TS;
 const GHOST_COLORS = ['#FF5A5F', '#34F5A5', '#E8ECFF', '#7FD8FF'];
-const SLIDE_TIME = 0.18;
+const FRIGHT_PALETTE: [string, string, string] = ['#1F3BFF', '#6E8BFF', '#2A2FFF'];
+const WARP = { core: '#C77DFF', hot: '#F3E3FF', deep: '#7A3DFF' };
+const SLIDE_TIME = 0.2;
+const REDUCED_MOTION = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 interface Particle { x: number; y: number; vx: number; vy: number; life: number; max: number; color: string; size: number }
-interface Ring { x: number; y: number; life: number; max: number; color: string; r0: number; r1: number }
+interface Ring { x: number; y: number; life: number; max: number; color: string; r0: number; r1: number; width: number }
+interface Popup { x: number; y: number; text: string; sub?: string; color: string; life: number; max: number; size: number }
+interface Star { x: number; y: number; r: number; tw: number; depth: number }
 
 export class Renderer {
   readonly canvas: HTMLCanvasElement;
@@ -34,17 +43,31 @@ export class Renderer {
   private camFromX = 0;
   private camFromY = 0;
   private camT = 1;
+  private slideDX = 0;
+  private slideDY = 0;
   private viewMaze = -1;
   private particles: Particle[] = [];
   private rings: Ring[] = [];
+  private popups: Popup[] = [];
   private trails = new Map<number, { x: number; y: number }[]>();
+  private dotPop = new Map<number, number>();
+  private levelFlash = new Map<number, number>();
+  private portalFlash = new Map<string, number>();
+  private mazeCard: { title: string; sub: string; color: string; life: number } | null = null;
+  private stars: Star[] = [];
+  private shake = 0;
+  private flash = { color: '#FFFFFF', alpha: 0 };
   private nearMiss = 0;
+  private frameDt = 0;
   private gameRef: Game | null = null;
   time = 0;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d')!;
+    for (let i = 0; i < 140; i++) {
+      this.stars.push({ x: Math.random() * VIEW_W, y: Math.random() * VIEW_H, r: 0.6 + Math.random() * 1.4, tw: Math.random() * 6, depth: 0.15 + Math.random() * 0.5 });
+    }
     this.resize(1);
   }
 
@@ -55,37 +78,129 @@ export class Renderer {
     this.canvas.height = Math.round(VIEW_H * scale);
   }
 
+  private addShake(amount: number) { this.shake = Math.max(this.shake, amount); }
+  private addFlash(color: string, alpha: number) { if (alpha >= this.flash.alpha) this.flash = { color, alpha }; }
+
   /** Feeds simulation events to the visual effects. */
   onEvents(game: Game, events: GameEvent[], viewer: Player | null) {
+    const vm = viewer && viewer.state !== 'out' ? game.mazeAt(viewer.x, viewer.y) : this.viewMaze;
+    const near = new Set(vm >= 0 ? [vm, ...game.neighborTargets(vm)] : []);
+    const mine = (e: GameEvent) => viewer !== null && e.player === viewer.id;
     for (const e of events) {
-      if (e.x === undefined || e.y === undefined) {
-        continue;
-      }
       switch (e.kind) {
-        case 'dot': this.burst(e.x, e.y, '#F4E9C8', 3, 1.2, 0.25); break;
-        case 'power': this.ring(e.x, e.y, '#FFF3D1', 0.5, 0.4, 6); this.burst(e.x, e.y, '#FFF3D1', 12, 4, 0.5); break;
-        case 'ghost': this.ring(e.x, e.y, e.color ?? '#fff', 0.5, 0.3, 4); this.burst(e.x, e.y, '#9AB0FF', 16, 5, 0.6); break;
-        case 'death': this.burst(e.x, e.y, e.color ?? '#FFD84A', 28, 7, 0.9); this.ring(e.x, e.y, e.color ?? '#fff', 0.7, 0.4, 5); break;
-        case 'fruit': this.ring(e.x, e.y, '#FF4D5E', 0.8, 0.4, 14); this.burst(e.x, e.y, '#FF8FA0', 24, 6, 0.8); break;
-        case 'pickup': this.ring(e.x, e.y, '#7DE3FF', 0.6, 0.3, 6); break;
+        case 'dot':
+          if (mine(e)) this.dotPop.set(e.player!, 1);
+          this.burst(e.x!, e.y!, '#F4E9C8', 4, 1.6, 0.3);
+          break;
+        case 'power':
+          this.ring(e.x!, e.y!, '#FFF3D1', 0.6, 0.4, e.maze === vm ? 7 : 3, 4);
+          if (e.maze === vm) this.ring(e.x!, e.y!, '#6E8BFF', 0.9, 0.4, 16, 2);
+          this.burst(e.x!, e.y!, '#FFF3D1', 18, 6, 0.6);
+          if (e.maze === vm) { this.addShake(4); this.addFlash('#6E8BFF', 0.18); }
+          if (mine(e)) this.popup(e.x!, e.y!, 'POWER!', '#FFF3D1', 26);
+          break;
+        case 'ghost': {
+          const sent = e.target?.length ?? 0;
+          this.ring(e.x!, e.y!, '#FFFFFF', 0.45, 0.3, 3.5, 5);
+          this.ring(e.x!, e.y!, e.color ?? '#9AB0FF', 0.7, 0.5, 7, 3);
+          this.burst(e.x!, e.y!, '#9AB0FF', 22, 7, 0.7);
+          this.burst(e.x!, e.y!, e.color ?? '#FFFFFF', 10, 4, 0.5);
+          this.popup(e.x!, e.y!, `×${e.n ?? 1}`, '#FFFFFF', 30 + Math.min(4, e.n ?? 1) * 4, sent ? `${sent} RAIDER${sent > 1 ? 'S' : ''} SENT` : undefined);
+          if (e.maze === vm) { this.addShake(5 + (e.n ?? 1)); this.addFlash('#FFFFFF', 0.22); }
+          break;
+        }
+        case 'death':
+          this.burst(e.x!, e.y!, e.color ?? '#FFD84A', 36, 9, 1);
+          this.ring(e.x!, e.y!, e.color ?? '#fff', 0.8, 0.4, 6, 4);
+          if (mine(e)) { this.addShake(16); this.addFlash('#FF2F5A', 0.45); }
+          else if (e.maze === vm) this.addShake(4);
+          break;
+        case 'fruit':
+          this.ring(e.x!, e.y!, '#FF4D5E', 0.9, 0.4, 16, 4);
+          this.burst(e.x!, e.y!, '#FF8FA0', 30, 7, 0.9);
+          this.burst(e.x!, e.y!, '#7CE38B', 10, 4, 0.7);
+          this.popup(e.x!, e.y!, 'FRUIT!', '#FF8FA0', 28);
+          if (e.maze === vm) { this.addShake(6); this.addFlash('#FF8FA0', 0.2); }
+          break;
+        case 'levelUp': {
+          this.levelFlash.set(e.maze!, 1);
+          if (e.maze === vm) {
+            const pal = C.LEVEL_PALETTE[e.n ?? 1];
+            const m = game.mazes[e.maze];
+            this.popup(m.ox + C.MW / 2, m.oy + 3.5, `LEVEL ${e.n}`, pal[1], 48, 'FASTER GHOSTS · SHORTER POWER');
+          }
+          break;
+        }
+        case 'pickup': {
+          const p = game.players[e.player!];
+          const x = e.x ?? p.x, y = e.y ?? p.y;
+          this.ring(x, y, '#7DE3FF', 0.6, 0.3, 6, 3);
+          this.burst(x, y, '#7DE3FF', 14, 5, 0.6);
+          if (mine(e)) this.popup(x, y, String(e.text ?? '').toUpperCase(), '#7DE3FF', 26);
+          break;
+        }
+        case 'airdrop':
+          this.ring(e.x!, e.y!, '#7DE3FF', 1.1, 3, 0.4, 3);
+          this.burst(e.x!, e.y!, '#7DE3FF', 16, 5, 0.8);
+          break;
+        case 'raiders':
+          if (e.target?.includes(vm)) { this.addShake(4); this.addFlash(e.color ?? '#FF3DCB', 0.14); }
+          break;
+        case 'daze':
+          if (e.maze === vm) { this.addShake(9); this.addFlash('#7DE3FF', 0.3); }
+          {
+            const p = game.players[e.player!];
+            this.ring(p.x, p.y, '#7DE3FF', 0.7, 0.5, 22, 5);
+          }
+          break;
+        case 'collapseStart':
+          if (e.maze === vm) this.addShake(4);
+          break;
+        case 'collapse':
+          if (e.maze === vm) { this.addShake(18); this.addFlash('#FF4D5E', 0.4); }
+          else if (near.has(e.maze!)) this.addShake(8);
+          break;
+        case 'warp': {
+          // Both portal mouths flare.
+          this.portalFlash.set(`${Math.round(e.x!)},${Math.round(e.y!)}`, 1);
+          this.portalFlash.set(`${Math.round(e.x2!)},${Math.round(e.y2!)}`, 1);
+          this.burst(e.x!, e.y!, WARP.core, 14, 5, 0.5);
+          this.burst(e.x2!, e.y2!, WARP.hot, 14, 5, 0.5);
+          this.ring(e.x2!, e.y2!, WARP.core, 0.5, 0.3, 2.5, 4);
+          if (mine(e)) this.addShake(3);
+          break;
+        }
+        case 'door':
+          if (mine(e)) {
+            const m = game.mazes[e.maze!];
+            const owner = m.owner >= 0 ? game.players[m.owner] : null;
+            const whose = m.idx === viewer!.home ? 'YOUR HOME' : owner ? `${owner.name}’S HOME` : '';
+            this.mazeCard = { title: mazeName(m.idx), sub: `LV ${m.level}${whose ? ' · ' + whose : ''}`, color: C.LEVEL_PALETTE[m.level][1], life: 1.5 };
+            const p = game.players[e.player!];
+            this.burst(p.x, p.y, p.color, 10, 6, 0.4);
+          }
+          break;
         default: break;
       }
     }
-    void game;
-    void viewer;
   }
 
   private burst(x: number, y: number, color: string, n: number, speed: number, life: number) {
     for (let i = 0; i < n; i++) {
       const a = Math.random() * Math.PI * 2;
       const s = speed * (0.4 + Math.random() * 0.6);
-      this.particles.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life, max: life, color, size: 2 + Math.random() * 2 });
+      this.particles.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life, max: life, color, size: 2 + Math.random() * 2.5 });
     }
-    if (this.particles.length > 600) this.particles.splice(0, this.particles.length - 600);
+    if (this.particles.length > 900) this.particles.splice(0, this.particles.length - 900);
   }
 
-  private ring(x: number, y: number, color: string, life: number, r0: number, r1: number) {
-    this.rings.push({ x, y, color, life, max: life, r0, r1 });
+  private ring(x: number, y: number, color: string, life: number, r0: number, r1: number, width = 3) {
+    this.rings.push({ x, y, color, life, max: life, r0, r1, width });
+  }
+
+  private popup(x: number, y: number, text: string, color: string, size: number, sub?: string) {
+    this.popups.push({ x, y, text, sub, color, life: 1.1, max: 1.1, size });
+    if (this.popups.length > 30) this.popups.shift();
   }
 
   // ---------- coordinates ----------
@@ -93,12 +208,15 @@ export class Renderer {
   private sx(x: number) { return OX + (wrapDelta(x - (this.camX + C.MW / 2), C.WORLD_W) + C.MW / 2) * TS + TS / 2; }
   private sy(y: number) { return OY + (wrapDelta(y - (this.camY + C.MH / 2), C.WORLD_H) + C.MH / 2) * TS + TS / 2; }
   private visible(px: number, py: number, m = 60) { return px > -m && px < VIEW_W + m && py > -m && py < VIEW_H + m; }
+  private mazePos(m: MazeState) {
+    return { px: OX + wrapDelta(m.ox - this.camX, C.WORLD_W) * TS, py: OY + wrapDelta(m.oy - this.camY, C.WORLD_H) * TS };
+  }
 
   // ---------- wall art ----------
 
-  private wallCanvas(game: Game, idx: number): HTMLCanvasElement {
+  private wallCanvas(game: Game, idx: number, variant: 'normal' | 'fright' = 'normal'): HTMLCanvasElement {
     const m = game.mazes[idx];
-    const key = `${idx}:${m.collapsed ? 'x' : m.level}`;
+    const key = `${idx}:${m.collapsed ? 'x' : variant === 'fright' ? 'f' : m.level}`;
     let cv = this.wallCache.get(key);
     if (cv) {
       // keep recently used entries at the end (LRU order)
@@ -129,7 +247,7 @@ export class Renderer {
       g.lineWidth = 3;
       g.stroke(path);
     } else {
-      const [c1, c2, c3] = C.LEVEL_PALETTE[m.level];
+      const [c1, c2, c3] = variant === 'fright' ? FRIGHT_PALETTE : C.LEVEL_PALETTE[m.level];
       const grad = g.createLinearGradient(0, 0, MAZE_PX_W, MAZE_PX_H);
       grad.addColorStop(0, c1);
       grad.addColorStop(0.3, c2);
@@ -156,7 +274,7 @@ export class Renderer {
       g.stroke(path);
     }
     this.wallCache.set(key, cv);
-    while (this.wallCache.size > 12) this.wallCache.delete(this.wallCache.keys().next().value!);
+    while (this.wallCache.size > 24) this.wallCache.delete(this.wallCache.keys().next().value!);
     return cv;
   }
 
@@ -171,9 +289,15 @@ export class Renderer {
       this.trails.clear();
       this.particles = [];
       this.rings = [];
+      this.popups = [];
+      this.levelFlash.clear();
+      this.portalFlash.clear();
+      this.mazeCard = null;
+      this.layerKey = '';
       this.viewMaze = -1;
     }
     this.time += dt;
+    this.frameDt = dt;
     const ctx = this.ctx;
     ctx.setTransform(this.scale, 0, 0, this.scale, 0, 0);
     ctx.fillStyle = '#05060B';
@@ -184,7 +308,11 @@ export class Renderer {
     const tm = game.mazes[target < 0 ? 12 : target];
     if (this.viewMaze !== tm.idx) {
       if (this.viewMaze < 0) { this.camX = tm.ox; this.camY = tm.oy; this.camT = 1; }
-      else { this.camFromX = this.camX; this.camFromY = this.camY; this.camT = 0; }
+      else {
+        this.camFromX = this.camX; this.camFromY = this.camY; this.camT = 0;
+        this.slideDX = Math.sign(wrapDelta(tm.ox - this.camX, C.WORLD_W));
+        this.slideDY = Math.sign(wrapDelta(tm.oy - this.camY, C.WORLD_H));
+      }
       this.viewMaze = tm.idx;
     }
     if (this.camT < 1) {
@@ -203,7 +331,17 @@ export class Renderer {
       }
     }
     this.nearMiss = Math.max(0, this.nearMiss - dt * 2.5);
+
+    this.drawStars();
+
+    // Screen shake + near-miss zoom apply to the world, not the HUD.
+    this.shake *= Math.exp(-dt * 10);
+    if (this.shake < 0.2) this.shake = 0;
+    const amp = REDUCED_MOTION ? 0 : this.shake;
     const zoom = 1 + this.nearMiss * 0.012;
+    // Only touch the transform when needed: an identity-but-not-quite matrix knocks
+    // the big wall bitmaps off the fast pixel-aligned blit path.
+    if (amp > 0) ctx.translate(Math.round((Math.random() - 0.5) * amp), Math.round((Math.random() - 0.5) * amp));
     if (zoom > 1) {
       ctx.translate(VIEW_W / 2, VIEW_H / 2);
       ctx.scale(zoom, zoom);
@@ -211,15 +349,17 @@ export class Renderer {
     }
 
     this.drawMazes(game);
+    this.drawPortals(game);
     this.drawPellets(game);
     this.drawPickups(game);
     this.drawGhosts(game);
     this.drawRaiders(game);
     this.drawPlayers(game, viewer, dt);
     this.drawEffects(dt);
-    this.drawMazeOverlays(game, viewer);
+    this.drawMazeOverlays(game);
 
     ctx.setTransform(this.scale, 0, 0, this.scale, 0, 0);
+    this.drawSlideStreaks();
     if (this.nearMiss > 0) {
       const g = ctx.createRadialGradient(VIEW_W / 2, VIEW_H / 2, VIEW_H * 0.35, VIEW_W / 2, VIEW_H / 2, VIEW_H * 0.85);
       g.addColorStop(0, 'rgba(255,40,80,0)');
@@ -228,54 +368,152 @@ export class Renderer {
       ctx.fillRect(0, 0, VIEW_W, VIEW_H);
     }
     this.drawBlackout(game, viewer);
+    this.drawMazeCard(dt);
+    if (this.flash.alpha > 0.005) {
+      ctx.globalAlpha = this.flash.alpha;
+      ctx.fillStyle = this.flash.color;
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.fillRect(0, 0, VIEW_W, VIEW_H);
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.globalAlpha = 1;
+      this.flash.alpha *= Math.exp(-dt * 9);
+    }
   }
+
+  private drawStars() {
+    const ctx = this.ctx;
+    ctx.fillStyle = '#9AA6E0';
+    for (const s of this.stars) {
+      const x = ((s.x - this.camX * TS * s.depth * 0.05) % VIEW_W + VIEW_W) % VIEW_W;
+      const y = ((s.y - this.camY * TS * s.depth * 0.05) % VIEW_H + VIEW_H) % VIEW_H;
+      ctx.globalAlpha = 0.08 + 0.12 * (0.5 + 0.5 * Math.sin(this.time * 1.5 + s.tw)) * s.depth * 2;
+      ctx.fillRect(x - s.r, y - s.r, s.r * 2, s.r * 2);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  private nineMazes(game: Game): MazeState[] {
+    const cm = game.mazes[game.mazeAt(this.camX + C.MW / 2, this.camY + C.MH / 2)];
+    const out: MazeState[] = [];
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        out.push(game.mazes[((cm.mx + dx + C.GRID) % C.GRID) + ((cm.my + dy + C.GRID) % C.GRID) * C.GRID]);
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Static wall art for the 3x3 neighborhood is composited into one screen-sized
+   * layer and reused until something changes (camera, a level, a collapse, a power
+   * pellet). Animated cases (fades, flickers, flares) draw directly.
+   */
+  private layer: HTMLCanvasElement | null = null;
+  private layerKey = '';
 
   private drawMazes(game: Game) {
     const ctx = this.ctx;
-    const cm = game.mazes[game.mazeAt(this.camX + C.MW / 2, this.camY + C.MH / 2)];
-    for (let dy = -1; dy <= 1; dy++) {
-      for (let dx = -1; dx <= 1; dx++) {
-        const mx = (cm.mx + dx + C.GRID) % C.GRID, my = (cm.my + dy + C.GRID) % C.GRID;
-        const idx = mx + my * C.GRID;
-        const m = game.mazes[idx];
-        const px = OX + wrapDelta(m.ox - this.camX, C.WORLD_W) * TS;
-        const py = OY + wrapDelta(m.oy - this.camY, C.WORLD_H) * TS;
-        if (px > VIEW_W || py > VIEW_H || px + MAZE_PX_W < 0 || py + MAZE_PX_H < 0) continue;
-        const main = idx === this.viewMaze;
-        ctx.globalAlpha = main ? 1 : 0.45;
-        if (m.collapseTimer > 0) ctx.globalAlpha *= 0.55 + 0.45 * Math.abs(Math.sin(this.time * 6));
-        ctx.drawImage(this.wallCanvas(game, idx), px - PAD, py - PAD, MAZE_PX_W + PAD * 2, MAZE_PX_H + PAD * 2);
-        ctx.globalAlpha = 1;
-        if (m.collapsed) {
-          ctx.save();
+    const nine = this.nineMazes(game);
+    let animating = this.camT < 1;
+    const parts: string[] = [String(this.viewMaze), String(this.scale)];
+    for (const m of nine) {
+      const fk = this.frightMix(m);
+      if ((fk > 0 && fk < 1) || m.collapseTimer > 0 || m.hitstop > 0 || (this.levelFlash.get(m.idx) ?? 0) > 0) animating = true;
+      parts.push(`${m.idx}:${m.collapsed ? 'x' : m.level}:${fk >= 1 ? 'f' : 'n'}`);
+    }
+    if (animating) {
+      this.drawWallsTo(ctx, game, nine);
+    } else {
+      const key = parts.join('|');
+      if (!this.layer || key !== this.layerKey) {
+        this.layer ??= document.createElement('canvas');
+        this.layer.width = this.canvas.width;
+        this.layer.height = this.canvas.height;
+        const lc = this.layer.getContext('2d')!;
+        lc.setTransform(this.scale, 0, 0, this.scale, 0, 0);
+        lc.clearRect(0, 0, VIEW_W, VIEW_H);
+        this.drawWallsTo(lc, game, nine);
+        this.layerKey = key;
+      }
+      ctx.drawImage(this.layer, 0, 0, VIEW_W, VIEW_H);
+    }
+    for (const m of nine) {
+      if (m.idx !== this.viewMaze || m.collapsed) continue;
+      const { px, py } = this.mazePos(m);
+      this.drawGates(game, m, px, py);
+    }
+    for (const [k, v] of this.levelFlash) {
+      const nv = v - this.frameDt * 1.6;
+      if (nv <= 0) this.levelFlash.delete(k); else this.levelFlash.set(k, nv);
+    }
+  }
+
+  /** 0 = normal walls, 1 = fully "powered" blue walls; in between while fading or flickering. */
+  private frightMix(m: MazeState): number {
+    if (m.collapsed || m.frightTimer <= 0) return 0;
+    const total = C.FRIGHT_TIME[m.level];
+    let fk = Math.min(1, (total - m.frightTimer) / 0.25, m.frightTimer / 0.3);
+    if (m.frightTimer < 1.6) fk *= Math.sin(this.time * 16) > 0 ? 1 : 0.25;
+    return fk;
+  }
+
+  private drawWallsTo(ctx: CanvasRenderingContext2D, game: Game, nine: MazeState[]) {
+    for (const m of nine) {
+      const { px, py } = this.mazePos(m);
+      if (px > VIEW_W || py > VIEW_H || px + MAZE_PX_W < 0 || py + MAZE_PX_H < 0) continue;
+      const main = m.idx === this.viewMaze;
+      let base = main ? 1 : 0.45;
+      if (m.collapseTimer > 0) base *= 0.55 + 0.45 * Math.abs(Math.sin(this.time * 6));
+      const dx = px - PAD, dy = py - PAD, w = MAZE_PX_W + PAD * 2, h = MAZE_PX_H + PAD * 2;
+      // Power pellet: walls flood blue, then flicker back as the power runs out.
+      const fk = this.frightMix(m);
+      if (fk < 1) {
+        ctx.globalAlpha = base * (1 - fk);
+        ctx.drawImage(this.wallCanvas(game, m.idx), dx, dy, w, h);
+      }
+      if (fk > 0) {
+        ctx.globalAlpha = base * fk;
+        ctx.drawImage(this.wallCanvas(game, m.idx, 'fright'), dx, dy, w, h);
+      }
+      // Level-up / hit-pause flare: brighten the walls additively.
+      const lf = this.levelFlash.get(m.idx) ?? 0;
+      const hs = m.hitstop > 0 ? m.hitstop / C.HITSTOP : 0;
+      const flare = Math.max(lf, hs * 0.6);
+      if (flare > 0.01) {
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.globalAlpha = base * flare;
+        ctx.drawImage(this.wallCanvas(game, m.idx, fk > 0.5 ? 'fright' : 'normal'), dx, dy, w, h);
+        ctx.globalCompositeOperation = 'source-over';
+      }
+      ctx.globalAlpha = 1;
+      if (m.collapsed) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(px, py, MAZE_PX_W, MAZE_PX_H);
+        ctx.clip();
+        ctx.strokeStyle = 'rgba(40,46,70,0.45)';
+        ctx.lineWidth = 3;
+        for (let k = -MAZE_PX_H; k < MAZE_PX_W; k += 14) {
           ctx.beginPath();
-          ctx.rect(px, py, MAZE_PX_W, MAZE_PX_H);
-          ctx.clip();
-          ctx.strokeStyle = 'rgba(40,46,70,0.45)';
-          ctx.lineWidth = 3;
-          for (let k = -MAZE_PX_H; k < MAZE_PX_W; k += 14) {
-            ctx.beginPath();
-            ctx.moveTo(px + k, py);
-            ctx.lineTo(px + k + MAZE_PX_H, py + MAZE_PX_H);
-            ctx.stroke();
-          }
-          ctx.restore();
-        } else {
-          // ghost house gate
-          ctx.fillStyle = '#FF9BD1';
-          ctx.globalAlpha = main ? 1 : 0.45;
-          ctx.fillRect(px + 18.6 * TS, py + 8.5 * TS - 3, 2.8 * TS, 6);
-          ctx.globalAlpha = 1;
+          ctx.moveTo(px + k, py);
+          ctx.lineTo(px + k + MAZE_PX_H, py + MAZE_PX_H);
+          ctx.stroke();
         }
-        if (main) this.drawDoors(game, m.idx, px, py);
+        ctx.restore();
+      } else {
+        // ghost house gate
+        ctx.fillStyle = '#FF9BD1';
+        ctx.globalAlpha = main ? 1 : 0.45;
+        ctx.fillRect(px + 18.6 * TS, py + 8.5 * TS - 3, 2.8 * TS, 6);
+        ctx.globalAlpha = 1;
       }
     }
     // seams between mazes
+    const cm = game.mazes[this.viewMaze] ?? game.mazes[0];
+    const { px: sxm, py: sym } = this.mazePos(cm);
     ctx.strokeStyle = 'rgba(255,255,255,0.1)';
     ctx.lineWidth = 1;
     ctx.setLineDash([6, 8]);
-    const sxm = OX + wrapDelta(cm.ox - this.camX, C.WORLD_W) * TS;
-    const sym = OY + wrapDelta(cm.oy - this.camY, C.WORLD_H) * TS;
     ctx.beginPath();
     for (const x of [sxm, sxm + MAZE_PX_W]) { ctx.moveTo(x, 0); ctx.lineTo(x, VIEW_H); }
     for (const y of [sym, sym + MAZE_PX_H]) { ctx.moveTo(0, y); ctx.lineTo(VIEW_W, y); }
@@ -283,9 +521,9 @@ export class Renderer {
     ctx.setLineDash([]);
   }
 
-  private drawDoors(game: Game, idx: number, px: number, py: number) {
+  /** Doors to neighboring mazes: a lit threshold in the neighbor's colors, chevrons streaming out, and its name. */
+  private drawGates(game: Game, m: MazeState, px: number, py: number) {
     const ctx = this.ctx;
-    const m = game.mazes[idx];
     const neighbor = (d: number) => game.mazes[((m.mx + DX[d] + C.GRID) % C.GRID) + ((m.my + DY[d] + C.GRID) % C.GRID) * C.GRID];
     const doors: [number, number, number][] = [
       [C.DOOR_COLS[0], 0, 0], [C.DOOR_COLS[1], 0, 0],
@@ -295,76 +533,202 @@ export class Renderer {
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     for (const [c, r, d] of doors) {
+      const ax = DX[d], ay = DY[d]; // outward direction
       const cx = px + c * TS + TS / 2, cy = py + r * TS + TS / 2;
+      // Threshold line sits on the maze boundary, across the 2-tile-wide opening.
+      const bx = cx + ax * TS / 2, by = cy + ay * TS / 2;
+      const half = TS; // half-width of the opening
       const n = neighbor(d);
+      ctx.save();
       if (n.collapsed) {
-        ctx.fillStyle = '#FF4D5E';
-        ctx.shadowColor = '#FF4D5E';
-        ctx.shadowBlur = 10;
-        const ex = cx + DX[d] * 13, ey = cy + DY[d] * 13;
-        if (DX[d] === 0) ctx.fillRect(ex - 27, ey - 3, 54, 6); else ctx.fillRect(ex - 3, ey - 27, 6, 54);
-        ctx.shadowBlur = 0;
+        // Sealed: hazard-striped barrier.
+        ctx.translate(bx, by);
+        if (ax !== 0) ctx.rotate(Math.PI / 2);
+        ctx.fillStyle = '#2A0B12';
+        ctx.fillRect(-half, -5, half * 2, 10);
+        ctx.beginPath();
+        ctx.rect(-half, -5, half * 2, 10);
+        ctx.clip();
+        ctx.strokeStyle = '#FF4D5E';
+        ctx.lineWidth = 4;
+        for (let k = -half - 10; k < half + 10; k += 10) { ctx.beginPath(); ctx.moveTo(k, 6); ctx.lineTo(k + 10, -6); ctx.stroke(); }
+        ctx.restore();
+        ctx.save();
+        ctx.font = '700 11px "Chakra Petch", sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillStyle = '#FF7A87';
+        ctx.fillText('SEALED', bx + ax * 26, by + ay * 22);
+        ctx.restore();
         continue;
       }
-      const warn = n.collapseTimer > 0;
-      ctx.strokeStyle = warn ? (Math.sin(this.time * 10) > 0 ? '#FF4D5E' : '#FFD0D5') : 'rgba(233,237,255,0.85)';
-      ctx.lineWidth = 3;
+      const pal = C.LEVEL_PALETTE[n.level];
+      const closing = n.collapseTimer > 0;
+      const blink = closing && Math.sin(this.time * 12) > 0;
+      const col = closing ? (blink ? '#FF4D5E' : '#FFD0D5') : pal[1];
+      // Floor glow fading inward from the threshold.
+      const depth = TS * 2.6;
+      const g = ctx.createLinearGradient(bx, by, bx - ax * depth, by - ay * depth);
+      g.addColorStop(0, hexA(col, 0.38));
+      g.addColorStop(1, hexA(col, 0));
+      ctx.fillStyle = g;
+      if (ax === 0) ctx.fillRect(bx - half + 4, Math.min(by, by - ay * depth), half * 2 - 8, depth);
+      else ctx.fillRect(Math.min(bx, bx - ax * depth), by - half + 4, depth, half * 2 - 8);
+      // Threshold bar.
+      ctx.strokeStyle = col;
       ctx.beginPath();
-      const ax = DX[d], ay = DY[d];
-      const tipX = cx + ax * 4, tipY = cy + ay * 4;
-      ctx.moveTo(tipX - ax * 9 - ay * 9, tipY - ay * 9 - ax * 9);
-      ctx.lineTo(tipX, tipY);
-      ctx.lineTo(tipX - ax * 9 + ay * 9, tipY - ay * 9 + ax * 9);
+      ctx.moveTo(bx - ay * (half - 6), by - ax * (half - 6));
+      ctx.lineTo(bx + ay * (half - 6), by + ax * (half - 6));
+      ctx.globalAlpha = 0.25;
+      ctx.lineWidth = 12;
       ctx.stroke();
-    }
-    // tunnel warp rings
-    ctx.strokeStyle = '#7DE3FF';
-    ctx.lineWidth = 2.5;
-    ctx.setLineDash([5, 4]);
-    ctx.lineDashOffset = -this.time * 20;
-    for (const c of [0, C.MW - 1]) {
-      ctx.beginPath();
-      ctx.arc(px + c * TS + TS / 2, py + C.TUNNEL_ROW * TS + TS / 2, 12, 0, Math.PI * 2);
+      ctx.globalAlpha = 1;
+      ctx.lineWidth = 4;
       ctx.stroke();
+      // Chevrons streaming outward through the door.
+      for (let k = 0; k < 3; k++) {
+        const t = (this.time * 1.4 + k / 3) % 1;
+        const off = -TS * 1.6 + t * TS * 2.2;
+        const tx = bx + ax * off, ty = by + ay * off;
+        ctx.globalAlpha = Math.sin(t * Math.PI) * 0.9;
+        ctx.strokeStyle = closing ? col : '#FFFFFF';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(tx - ax * 7 - ay * 9, ty - ay * 7 - ax * 9);
+        ctx.lineTo(tx, ty);
+        ctx.lineTo(tx - ax * 7 + ay * 9, ty - ay * 7 + ax * 9);
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+      // Destination label just outside the door.
+      ctx.font = '700 12px "Chakra Petch", sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      const label = closing ? `${mazeName(n.idx)} CLOSING ${Math.ceil(n.collapseTimer)}` : `${mazeName(n.idx)} · LV ${n.level}`;
+      const lx = bx + ax * (ax !== 0 ? 48 : 0), ly = by + ay * 22;
+      const tw = ctx.measureText(label).width + 14;
+      ctx.fillStyle = 'rgba(5,6,11,0.8)';
+      roundRect(ctx, lx - tw / 2, ly - 10, tw, 20, 10);
+      ctx.fill();
+      ctx.strokeStyle = hexA(col, 0.7);
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.fillStyle = col;
+      ctx.fillText(label, lx, ly + 1);
+      ctx.restore();
     }
-    ctx.setLineDash([]);
-    ctx.lineDashOffset = 0;
+  }
+
+  /** Side tunnels: violet vortex portals at both ends of the tunnel row, linked to each other. */
+  private drawPortals(game: Game) {
+    const ctx = this.ctx;
+    for (const m of this.nineMazes(game)) {
+      if (m.collapsed) continue;
+      const { px, py } = this.mazePos(m);
+      const main = m.idx === this.viewMaze;
+      const alpha = main ? 1 : 0.4;
+      const cy = py + C.TUNNEL_ROW * TS + TS / 2;
+      for (const side of [0, 1]) {
+        const c = side === 0 ? 0 : C.MW - 1;
+        const cx = px + c * TS + TS / 2;
+        if (!this.visible(cx, cy, 60)) continue;
+        const inward = side === 0 ? 1 : -1;
+        const flashKey = `${m.ox + c},${m.oy + C.TUNNEL_ROW}`;
+        const fl = this.portalFlash.get(flashKey) ?? 0;
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        // Tube floor glowing violet, fading into the maze.
+        const g = ctx.createLinearGradient(cx, cy, cx + inward * TS * 3.2, cy);
+        g.addColorStop(0, hexA(WARP.core, 0.35 + fl * 0.4));
+        g.addColorStop(1, hexA(WARP.core, 0));
+        ctx.fillStyle = g;
+        ctx.fillRect(Math.min(cx, cx + inward * TS * 3.2), cy - TS + 5, TS * 3.2, TS * 2 - 10);
+        // Membrane at the maze edge: the tunnel does not continue into the neighbor.
+        const ex = side === 0 ? px : px + MAZE_PX_W;
+        ctx.strokeStyle = WARP.hot;
+        ctx.lineWidth = 2;
+        ctx.globalAlpha = alpha * (0.5 + 0.3 * Math.sin(this.time * 4));
+        ctx.beginPath(); ctx.moveTo(ex, cy - TS + 6); ctx.lineTo(ex, cy + TS - 6); ctx.stroke();
+        ctx.globalAlpha = alpha;
+        // Vortex.
+        ctx.translate(cx, cy);
+        const R = 15 + fl * 8;
+        const halo = ctx.createRadialGradient(0, 0, R * 0.6, 0, 0, R + 16 + fl * 14);
+        halo.addColorStop(0, hexA(WARP.core, 0.55));
+        halo.addColorStop(1, hexA(WARP.core, 0));
+        ctx.fillStyle = halo;
+        ctx.beginPath(); ctx.arc(0, 0, R + 16 + fl * 14, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#12051F';
+        ctx.beginPath(); ctx.arc(0, 0, R, 0, Math.PI * 2); ctx.fill();
+        const spin = this.time * (side === 0 ? 3 : -3);
+        const arcs: [number, string, number, number][] = [[R, WARP.deep, 3, 1], [R * 0.72, WARP.core, 2.5, -1.6], [R * 0.45, WARP.hot, 2, 2.4]];
+        for (const [rad, color, wdt, speed] of arcs) {
+          ctx.strokeStyle = color;
+          ctx.lineWidth = wdt;
+          for (let k = 0; k < 2; k++) {
+            const a0 = spin * speed + k * Math.PI;
+            ctx.beginPath(); ctx.arc(0, 0, rad, a0, a0 + Math.PI * 0.7); ctx.stroke();
+          }
+        }
+        // Motes spiralling in.
+        ctx.fillStyle = WARP.hot;
+        for (let k = 0; k < 6; k++) {
+          const t = (this.time * 0.8 + k / 6) % 1;
+          const a = spin * 0.5 + k * 1.7 + t * 4;
+          const rr = (1 - t) * (R + 12);
+          ctx.globalAlpha = alpha * t;
+          ctx.beginPath(); ctx.arc(Math.cos(a) * rr, Math.sin(a) * rr, 1.6, 0, Math.PI * 2); ctx.fill();
+        }
+        if (!main) { ctx.restore(); continue; }
+        ctx.globalAlpha = 0.85;
+        ctx.font = '700 10px "Chakra Petch", sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillStyle = WARP.hot;
+        ctx.fillText(side === 0 ? 'WARP ▸' : '◂ WARP', inward * 6, R + 15);
+        ctx.restore();
+      }
+    }
+    for (const [k, v] of this.portalFlash) {
+      const nv = v - this.frameDt * 2.5;
+      if (nv <= 0) this.portalFlash.delete(k); else this.portalFlash.set(k, nv);
+    }
   }
 
   private drawPellets(game: Game) {
     const ctx = this.ctx;
     const pulse = 0.75 + 0.25 * Math.sin(this.time * 6);
-    const cm = game.mazes[game.mazeAt(this.camX + C.MW / 2, this.camY + C.MH / 2)];
-    for (let dy = -1; dy <= 1; dy++) {
-      for (let dx = -1; dx <= 1; dx++) {
-        const m = game.mazes[((cm.mx + dx + C.GRID) % C.GRID) + ((cm.my + dy + C.GRID) % C.GRID) * C.GRID];
-        if (m.collapsed) continue;
-        const main = m.idx === this.viewMaze;
-        ctx.globalAlpha = main ? 1 : 0.5;
-        ctx.fillStyle = '#F4E9C8';
-        ctx.beginPath();
-        for (let i = 0; i < m.pellets.length; i++) {
-          if (m.pellets[i] !== P_DOT) continue;
-          const x = this.sx(m.ox + (i % C.MW)), y = this.sy(m.oy + Math.floor(i / C.MW));
-          if (!this.visible(x, y, 10)) continue;
-          ctx.moveTo(x + 4, y);
-          ctx.arc(x, y, 4, 0, Math.PI * 2);
-        }
-        ctx.fill();
-        ctx.fillStyle = '#FFF3D1';
-        ctx.shadowColor = '#FFE9A8';
-        ctx.shadowBlur = 14;
-        for (const i of m.layout.powerTiles) {
-          if (m.pellets[i] !== P_POWER) continue;
-          const x = this.sx(m.ox + (i % C.MW)), y = this.sy(m.oy + Math.floor(i / C.MW));
-          if (!this.visible(x, y, 20)) continue;
-          ctx.beginPath();
-          ctx.arc(x, y, 11 * pulse, 0, Math.PI * 2);
-          ctx.fill();
-        }
-        ctx.shadowBlur = 0;
-        ctx.globalAlpha = 1;
+    for (const m of this.nineMazes(game)) {
+      if (m.collapsed) continue;
+      const main = m.idx === this.viewMaze;
+      ctx.globalAlpha = main ? 1 : 0.5;
+      ctx.fillStyle = '#F4E9C8';
+      ctx.beginPath();
+      for (let i = 0; i < m.pellets.length; i++) {
+        if (m.pellets[i] !== P_DOT) continue;
+        const x = this.sx(m.ox + (i % C.MW)), y = this.sy(m.oy + Math.floor(i / C.MW));
+        if (!this.visible(x, y, 10)) continue;
+        ctx.moveTo(x + 4, y);
+        ctx.arc(x, y, 4, 0, Math.PI * 2);
       }
+      ctx.fill();
+      ctx.fillStyle = '#FFF3D1';
+      ctx.shadowColor = '#FFE9A8';
+      ctx.shadowBlur = 16;
+      for (const i of m.layout.powerTiles) {
+        if (m.pellets[i] !== P_POWER) continue;
+        const x = this.sx(m.ox + (i % C.MW)), y = this.sy(m.oy + Math.floor(i / C.MW));
+        if (!this.visible(x, y, 20)) continue;
+        ctx.beginPath();
+        ctx.arc(x, y, 11 * pulse, 0, Math.PI * 2);
+        ctx.fill();
+        if (main) {
+          ctx.strokeStyle = 'rgba(255,243,209,0.35)';
+          ctx.lineWidth = 1.5;
+          ctx.beginPath(); ctx.arc(x, y, 14 + 8 * ((this.time * 1.2) % 1), 0, Math.PI * 2); ctx.stroke();
+        }
+      }
+      ctx.shadowBlur = 0;
+      ctx.globalAlpha = 1;
     }
   }
 
@@ -374,11 +738,15 @@ export class Renderer {
       if (!m.fruit) continue;
       const x = this.sx(m.ox + C.FRUIT.x), y = this.sy(m.oy + C.FRUIT.y);
       if (!this.visible(x, y)) continue;
-      const bob = Math.sin(this.time * 3) * 2;
+      const bob = Math.sin(this.time * 3) * 3;
       ctx.save();
       ctx.translate(x, y + bob);
+      // halo
+      ctx.strokeStyle = 'rgba(255,77,94,0.4)';
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(0, 2, 22 + 4 * Math.sin(this.time * 4), 0, Math.PI * 2); ctx.stroke();
       ctx.shadowColor = '#FF4D5E';
-      ctx.shadowBlur = 16;
+      ctx.shadowBlur = 18;
       ctx.strokeStyle = '#7CE38B';
       ctx.lineWidth = 2.5;
       ctx.beginPath();
@@ -396,7 +764,13 @@ export class Renderer {
       const x = this.sx(a.x), y = this.sy(a.y);
       if (!this.visible(x, y)) continue;
       ctx.save();
-      ctx.translate(x, y);
+      // beam of light from above
+      const beam = ctx.createLinearGradient(x, y - 120, x, y);
+      beam.addColorStop(0, 'rgba(125,227,255,0)');
+      beam.addColorStop(1, 'rgba(125,227,255,0.22)');
+      ctx.fillStyle = beam;
+      ctx.fillRect(x - 12, y - 120, 24, 120);
+      ctx.translate(x, y + Math.sin(this.time * 3) * 2);
       ctx.rotate(Math.sin(this.time * 2) * 0.1);
       ctx.shadowColor = '#7DE3FF';
       ctx.shadowBlur = 18;
@@ -413,19 +787,26 @@ export class Renderer {
     for (const g of game.ghosts) {
       if (g.state === 'gone') continue;
       const m = game.mazes[g.maze];
-      let x = this.sx(g.x), y = this.sy(g.y);
+      const x = this.sx(g.x);
+      let y = this.sy(g.y);
       if (!this.visible(x, y)) continue;
       const main = g.maze === this.viewMaze;
+      const eyes = g.state === 'eyes' || g.state === 'entering';
+      // Ghosts still in or leaving the house turn blue too if a power pellet is active.
+      const fright = game.isFrightened(g) ||
+        ((g.state === 'house' || g.state === 'leaving') && m.frightTimer > 0 && g.eatenGen !== m.frightGen);
       ctx.save();
       if (g.state === 'house') y += Math.sin(this.time * 5 + g.kind) * 4;
       ctx.translate(x, y);
       ctx.globalAlpha = main ? 1 : 0.55;
-      ctx.scale(1.9, 1.9);
-      const fright = game.isFrightened(g);
-      if (g.state !== 'eyes') {
-        let fill = GHOST_COLORS[g.kind];
-        if (fright) fill = m.frightTimer < 1 && Math.sin(this.time * 20) > 0 ? '#E8ECFF' : '#2340FF';
-        else if (m.frenzy > 0) fill = Math.sin(this.time * 12) > 0 ? '#FF3D2E' : GHOST_COLORS[g.kind];
+      if (fright) ctx.rotate(Math.sin(this.time * 14 + g.id) * 0.12);
+      // Stretch slightly along the direction of travel; squash while crawling out.
+      const crawl = g.state === 'leaving' ? 1 + 0.06 * Math.sin(this.time * 18) : 1;
+      ctx.scale(1.9 * crawl, 1.9 / crawl);
+      if (!eyes) {
+        let fill = GHOST_COLORS[g.kind % 4];
+        if (fright) fill = m.frightTimer < 1.6 && Math.sin(this.time * 16) > 0 ? '#E8ECFF' : '#2340FF';
+        else if (m.frenzy > 0) fill = Math.sin(this.time * 12) > 0 ? '#FF3D2E' : GHOST_COLORS[g.kind % 4];
         ctx.shadowColor = fill;
         ctx.shadowBlur = main ? 10 : 0;
         ctx.fillStyle = fill;
@@ -436,8 +817,13 @@ export class Renderer {
         ctx.closePath();
         ctx.fill();
         ctx.shadowBlur = 0;
+        if (g.emerge > 0 && main) {
+          // freshly out: a fading outline so players notice it's still slow
+          ctx.strokeStyle = `rgba(255,255,255,${0.6 * g.emerge / C.GHOST_EMERGE_TIME})`;
+          ctx.lineWidth = 1.5;
+          ctx.stroke();
+        }
       }
-      // visor
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
       if (fright) {
@@ -447,14 +833,19 @@ export class Renderer {
         ctx.moveTo(-7, -2); ctx.lineTo(-3.5, -5); ctx.lineTo(0, -2); ctx.lineTo(3.5, -5); ctx.lineTo(7, -2);
         ctx.stroke();
       } else {
-        ctx.strokeStyle = g.state === 'eyes' ? '#E9EDFF' : '#05060B';
+        ctx.strokeStyle = eyes ? '#E9EDFF' : '#05060B';
         ctx.lineWidth = 3;
+        if (eyes) { ctx.shadowColor = '#E9EDFF'; ctx.shadowBlur = 8; }
         const lx = g.dir >= 0 ? DX[g.dir] * 2 : 0, ly = g.dir >= 0 ? DY[g.dir] * 1.5 : 0;
         ctx.beginPath();
         ctx.moveTo(-6 + lx, -3 + ly); ctx.lineTo(6 + lx, -3 + ly);
         ctx.stroke();
+        ctx.shadowBlur = 0;
       }
       ctx.restore();
+      if (eyes && main && Math.random() < 0.5) {
+        this.particles.push({ x: g.x, y: g.y, vx: 0, vy: 0, life: 0.25, max: 0.25, color: '#9AB0FF', size: 3 });
+      }
     }
   }
 
@@ -483,15 +874,21 @@ export class Renderer {
       ctx.setLineDash([6, 6]);
       ctx.lineDashOffset = this.time * 30;
       ctx.beginPath();
-      ctx.arc(0, 0, 40 - t * 14, 0, Math.PI * 2);
+      ctx.arc(0, 0, 44 - t * 18, 0, Math.PI * 2);
       ctx.stroke();
       ctx.setLineDash([]);
+      // crackle sparks converging
+      if (main && Math.random() < 0.6) {
+        const a = Math.random() * Math.PI * 2;
+        this.particles.push({ x: r.x + Math.cos(a) * 1.4, y: r.y + Math.sin(a) * 1.4, vx: -Math.cos(a) * 3, vy: -Math.sin(a) * 3, life: 0.3, max: 0.3, color: sender.color, size: 2.5 });
+      }
       alpha *= 0.25 + 0.4 * t;
     }
     if (r.life < 2 && Math.sin(this.time * 25) > 0) alpha *= 0.4;
     ctx.globalAlpha = alpha;
     ctx.rotate(frozen ? 0 : this.time * 2);
-    ctx.scale(1.75, 1.75);
+    const pulse = frozen ? 1 : 1 + 0.06 * Math.sin(this.time * 10 + r.id);
+    ctx.scale(1.75 * pulse, 1.75 * pulse);
     ctx.beginPath();
     for (let k = 0; k < 16; k++) {
       const rad = k % 2 === 0 ? 14 : 6;
@@ -499,7 +896,7 @@ export class Renderer {
       if (k === 0) ctx.moveTo(rad * Math.cos(a), rad * Math.sin(a)); else ctx.lineTo(rad * Math.cos(a), rad * Math.sin(a));
     }
     ctx.closePath();
-    const thawing = frozen && m.frightTimer < 1 && Math.sin(this.time * 20) > 0;
+    const thawing = frozen && m.frightTimer < 1.6 && Math.sin(this.time * 16) > 0;
     ctx.fillStyle = frozen ? (thawing ? sender.color : '#CFF4FF') : sender.color;
     ctx.shadowColor = frozen ? '#BDF1FF' : sender.color;
     ctx.shadowBlur = main ? 12 : 0;
@@ -535,17 +932,20 @@ export class Renderer {
         tr.push({ x: p.x, y: p.y });
         if (tr.length > 10) tr.shift();
       }
+      const pop = this.dotPop.get(p.id) ?? 0;
+      if (pop > 0) this.dotPop.set(p.id, Math.max(0, pop - dt * 8));
       if (!this.visible(x, y)) continue;
       const me = viewer && p.id === viewer.id;
       const main = p.maze === this.viewMaze;
+      const powered = main && game.mazes[p.maze].frightTimer > 0;
       if (p.state === 'alive' && tr.length > 1) {
-        ctx.strokeStyle = p.color;
+        ctx.strokeStyle = powered ? '#FFFFFF' : p.color;
         ctx.lineCap = 'round';
         for (let i = 1; i < tr.length; i++) {
           const a = this.sx(tr[i - 1].x), b = this.sy(tr[i - 1].y), c = this.sx(tr[i].x), d = this.sy(tr[i].y);
           if (Math.abs(a - c) > 60 || Math.abs(b - d) > 60) continue;
-          ctx.globalAlpha = (i / tr.length) * (me ? 0.35 : 0.2);
-          ctx.lineWidth = 6 + (i / tr.length) * 14;
+          ctx.globalAlpha = (i / tr.length) * (me ? 0.38 : 0.2);
+          ctx.lineWidth = 6 + (i / tr.length) * 16;
           ctx.beginPath(); ctx.moveTo(a, b); ctx.lineTo(c, d); ctx.stroke();
         }
         ctx.globalAlpha = 1;
@@ -554,7 +954,9 @@ export class Renderer {
       ctx.translate(x, y);
       let alpha = me ? 1 : main ? 0.88 : 0.5;
       if (p.invuln > 0 && Math.sin(this.time * 24) > 0) alpha *= 0.35;
-      let scale = 1.6;
+      let scale = 1.6 * (1 + pop * 0.16);
+      // Chomp: a pulse once per tile travelled.
+      if (p.state === 'alive' && p.daze <= 0) scale *= 1 + 0.06 * Math.sin((p.x + p.y) * Math.PI * 2);
       let spin = 0;
       if (p.state === 'dying') {
         const t = 1 - p.timer / C.DEATH_TIME;
@@ -563,13 +965,17 @@ export class Renderer {
         alpha *= 1 - t;
       }
       ctx.globalAlpha = alpha;
-      // daze charge ring
       if (p.dazeCharge > 0) {
         const t = 1 - p.dazeCharge / C.DAZE_CHARGE;
         ctx.strokeStyle = '#7DE3FF';
         ctx.lineWidth = 3;
         ctx.beginPath(); ctx.arc(0, 0, 20 + t * 40, 0, Math.PI * 2); ctx.stroke();
         ctx.beginPath(); ctx.arc(0, 0, 18, -Math.PI / 2, -Math.PI / 2 + t * Math.PI * 2); ctx.stroke();
+      }
+      if (powered && p.state === 'alive') {
+        ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(0, 0, 22 + 3 * Math.sin(this.time * 12), 0, Math.PI * 2); ctx.stroke();
       }
       ctx.rotate(spin);
       ctx.scale(scale, scale);
@@ -583,7 +989,6 @@ export class Renderer {
       ctx.fill();
       ctx.restore();
       ctx.shadowBlur = 0;
-      // direction chevron
       const f = p.face >= 0 ? p.face : 1;
       ctx.rotate([Math.PI / 2, Math.PI, -Math.PI / 2, 0][f]);
       ctx.strokeStyle = '#05060B';
@@ -592,7 +997,6 @@ export class Renderer {
       ctx.lineJoin = 'round';
       ctx.beginPath(); ctx.moveTo(-3, -6); ctx.lineTo(3, 0); ctx.lineTo(-3, 6); ctx.stroke();
       ctx.restore();
-      // daze stars
       if (p.daze > 0) {
         ctx.fillStyle = '#E9EDFF';
         for (let k = 0; k < 3; k++) {
@@ -600,7 +1004,6 @@ export class Renderer {
           ctx.beginPath(); ctx.arc(x + Math.cos(a) * 22, y - 26 + Math.sin(a) * 6, 3, 0, Math.PI * 2); ctx.fill();
         }
       }
-      // name tag
       if (p.state === 'alive' && (main || me)) {
         ctx.font = '700 13px "Chakra Petch", sans-serif';
         ctx.textAlign = 'center';
@@ -610,7 +1013,6 @@ export class Renderer {
         ctx.globalAlpha = 1;
       }
     }
-    void dt;
   }
 
   private drawEffects(dt: number) {
@@ -623,6 +1025,7 @@ export class Renderer {
       p.vy *= 0.92;
     }
     this.particles = this.particles.filter((p) => p.life > 0);
+    ctx.globalCompositeOperation = 'lighter';
     for (const p of this.particles) {
       const x = this.sx(p.x), y = this.sy(p.y);
       if (!this.visible(x, y, 10)) continue;
@@ -630,29 +1033,58 @@ export class Renderer {
       ctx.fillStyle = p.color;
       ctx.fillRect(x - p.size / 2, y - p.size / 2, p.size, p.size);
     }
+    ctx.globalCompositeOperation = 'source-over';
     for (const r of this.rings) r.life -= dt;
     this.rings = this.rings.filter((r) => r.life > 0);
     for (const r of this.rings) {
       const t = 1 - r.life / r.max;
       const x = this.sx(r.x), y = this.sy(r.y);
-      if (!this.visible(x, y, 300)) continue;
+      if (!this.visible(x, y, 500)) continue;
       ctx.globalAlpha = 1 - t;
       ctx.strokeStyle = r.color;
-      ctx.lineWidth = 3;
+      ctx.lineWidth = r.width * (1 - t * 0.6);
       ctx.beginPath();
-      ctx.arc(x, y, (r.r0 + (r.r1 - r.r0) * t) * TS, 0, Math.PI * 2);
+      ctx.arc(x, y, Math.max(0, (r.r0 + (r.r1 - r.r0) * (1 - Math.pow(1 - t, 3))) * TS), 0, Math.PI * 2);
       ctx.stroke();
     }
+    // Floating text.
+    for (const p of this.popups) p.life -= dt;
+    this.popups = this.popups.filter((p) => p.life > 0);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    for (const p of this.popups) {
+      const t = 1 - p.life / p.max;
+      const x = this.sx(p.x), y = this.sy(p.y) - 26 - t * 34;
+      if (!this.visible(x, y, 200)) continue;
+      const pop = t < 0.15 ? 0.6 + (t / 0.15) * 0.5 : 1.1 - Math.min(0.1, (t - 0.15));
+      ctx.globalAlpha = t > 0.7 ? (1 - t) / 0.3 : 1;
+      ctx.font = `800 ${Math.round(p.size * pop)}px "Orbitron", sans-serif`;
+      ctx.lineWidth = 5;
+      ctx.strokeStyle = 'rgba(5,6,11,0.85)';
+      ctx.strokeText(p.text, x, y);
+      ctx.shadowColor = p.color;
+      ctx.shadowBlur = 16;
+      ctx.fillStyle = p.color;
+      ctx.fillText(p.text, x, y);
+      ctx.shadowBlur = 0;
+      if (p.sub) {
+        ctx.font = '700 13px "Chakra Petch", sans-serif';
+        ctx.lineWidth = 4;
+        ctx.strokeText(p.sub, x, y + p.size * 0.75);
+        ctx.fillStyle = '#E9EDFF';
+        ctx.fillText(p.sub, x, y + p.size * 0.75);
+      }
+    }
+    ctx.textBaseline = 'alphabetic';
     ctx.globalAlpha = 1;
   }
 
-  private drawMazeOverlays(game: Game, viewer: Player | null) {
+  private drawMazeOverlays(game: Game) {
     const ctx = this.ctx;
     const m = game.mazes[this.viewMaze];
     if (!m) return;
-    const px = OX + wrapDelta(m.ox - this.camX, C.WORLD_W) * TS;
-    const py = OY + wrapDelta(m.oy - this.camY, C.WORLD_H) * TS;
-    // Telegraph incoming Blackout/Frenzy with a flashing border.
+    const { px, py } = this.mazePos(m);
+    // Telegraph incoming Blackout/Frenzy/collapse with a flashing border.
     const warn = m.blackoutWarn > 0 ? '#FF3DCB' : m.frenzyWarn > 0 ? '#FF5A36' : m.collapseTimer > 0 ? '#FF4D5E' : null;
     if (warn && Math.sin(this.time * 18) > -0.2) {
       ctx.strokeStyle = warn;
@@ -662,7 +1094,68 @@ export class Renderer {
       ctx.strokeRect(px + 4, py + 4, MAZE_PX_W - 8, MAZE_PX_H - 8);
       ctx.shadowBlur = 0;
     }
-    void viewer;
+    // Frenzy: a red heat haze around the maze edge.
+    if (m.frenzy > 0) {
+      const g = ctx.createRadialGradient(px + MAZE_PX_W / 2, py + MAZE_PX_H / 2, MAZE_PX_H * 0.45, px + MAZE_PX_W / 2, py + MAZE_PX_H / 2, MAZE_PX_W * 0.62);
+      g.addColorStop(0, 'rgba(255,60,40,0)');
+      g.addColorStop(1, `rgba(255,60,40,${0.12 + 0.06 * Math.sin(this.time * 8)})`);
+      ctx.fillStyle = g;
+      ctx.fillRect(px, py, MAZE_PX_W, MAZE_PX_H);
+    }
+  }
+
+  private drawSlideStreaks() {
+    if (this.camT >= 1) return;
+    const ctx = this.ctx;
+    const k = 1 - this.camT;
+    ctx.strokeStyle = '#FFFFFF';
+    ctx.lineWidth = 2;
+    for (let i = 0; i < 22; i++) {
+      const seed = (i * 97.13) % 1;
+      const along = ((this.time * 3 + seed) % 1);
+      ctx.globalAlpha = 0.18 * k;
+      ctx.beginPath();
+      if (this.slideDX !== 0) {
+        const y = (i / 22) * VIEW_H + 12;
+        const x = VIEW_W * along;
+        ctx.moveTo(x, y); ctx.lineTo(x - this.slideDX * 160 * k, y);
+      } else {
+        const x = (i / 22) * VIEW_W + 20;
+        const y = VIEW_H * along;
+        ctx.moveTo(x, y); ctx.lineTo(x, y - this.slideDY * 110 * k);
+      }
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  private drawMazeCard(dt: number) {
+    const card = this.mazeCard;
+    if (!card) return;
+    card.life -= dt;
+    if (card.life <= 0) { this.mazeCard = null; return; }
+    const ctx = this.ctx;
+    const t = 1 - card.life / 1.5;
+    ctx.globalAlpha = t < 0.12 ? t / 0.12 : card.life < 0.4 ? card.life / 0.4 : 1;
+    const y = 214 - (t < 0.12 ? (1 - t / 0.12) * 12 : 0);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = '800 64px "Orbitron", sans-serif';
+    ctx.lineWidth = 6;
+    ctx.strokeStyle = 'rgba(5,6,11,0.8)';
+    ctx.strokeText(card.title, VIEW_W / 2, y);
+    ctx.shadowColor = card.color;
+    ctx.shadowBlur = 24;
+    ctx.fillStyle = card.color;
+    ctx.fillText(card.title, VIEW_W / 2, y);
+    ctx.shadowBlur = 0;
+    ctx.font = '700 16px "Chakra Petch", sans-serif';
+    ctx.lineWidth = 4;
+    ctx.strokeText(card.sub, VIEW_W / 2, y + 46);
+    ctx.fillStyle = '#E9EDFF';
+    ctx.fillText(card.sub, VIEW_W / 2, y + 46);
+    ctx.textBaseline = 'alphabetic';
+    ctx.globalAlpha = 1;
   }
 
   private drawBlackout(game: Game, viewer: Player | null) {
@@ -678,6 +1171,12 @@ export class Renderer {
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, VIEW_W, VIEW_H);
   }
+}
+
+/** '#RRGGBB' + alpha -> rgba(). */
+function hexA(hex: string, a: number): string {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
 }
 
 function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
